@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Nano Flow Studio - 条件分岐フローチャート設計</title>
+  <title>Nano Flow Studio - ビジュアル条件分岐エディタ</title>
   <link rel="stylesheet" href="studio.css" />
 </head>
 <body>
@@ -13,7 +13,7 @@
         <img src="../icons/icon48.png" alt="Logo" class="topbar-icon" />
         <div class="topbar-brand">
           <h1>Nano Flow Studio</h1>
-          <span class="topbar-sub">ローカル完結・ビジュアル条件分岐エディタ</span>
+          <span class="topbar-sub">ドラッグ配置・クリック接続対応ビジュアルエディタ</span>
         </div>
         <input
           id="studioPresetName"
@@ -26,6 +26,7 @@
       </div>
 
       <div class="topbar-actions">
+        <button id="autoLayoutBtn" class="btn btn-secondary" type="button">自動整列</button>
         <button id="previewPlaybookBtn" class="btn btn-secondary" type="button">AI手順書プレビュー</button>
         <button id="exportJsonBtn" class="btn btn-secondary" type="button">JSON書出</button>
         <button id="importJsonBtn" class="btn btn-secondary" type="button">JSON読込</button>
@@ -51,22 +52,23 @@
 
         <section class="sidebar-block">
           <div class="sidebar-header">
-            <h2>ノードを追加（ルート）</h2>
+            <h2>ノード配置パレット</h2>
           </div>
+          <p class="palette-hint">キャンバスへドラッグ＆ドロップ、またはクリックで追加できます。</p>
           <div class="palette-grid">
-            <button class="palette-btn palette-action" data-add-type="action" type="button">
+            <button class="palette-btn palette-action" data-add-type="action" draggable="true" type="button">
               <span class="palette-badge">操作</span>
               <span>操作ステップ (Action)</span>
             </button>
-            <button class="palette-btn palette-condition" data-add-type="condition" type="button">
+            <button class="palette-btn palette-condition" data-add-type="condition" draggable="true" type="button">
               <span class="palette-badge">IF</span>
               <span>条件分岐 (YES / NO)</span>
             </button>
-            <button class="palette-btn palette-ask" data-add-type="ask_user" type="button">
+            <button class="palette-btn palette-ask" data-add-type="ask_user" draggable="true" type="button">
               <span class="palette-badge">確認</span>
               <span>人間に確認 (Ask User)</span>
             </button>
-            <button class="palette-btn palette-done" data-add-type="done" type="button">
+            <button class="palette-btn palette-done" data-add-type="done" draggable="true" type="button">
               <span class="palette-badge">完了</span>
               <span>フロー完了 (Done)</span>
             </button>
@@ -74,8 +76,14 @@
         </section>
       </aside>
 
-      <main class="studio-canvas-area">
-        <div id="flowCanvas" class="flow-canvas"></div>
+      <main class="studio-canvas-area" id="canvasScrollArea">
+        <div id="canvasStatusBar" class="canvas-status-bar">
+          ヒント: 左のノードをドラッグして設置 / ノード自体はドラッグで移動 / 下部の出力ポートをクリックしてから接続先ノードをクリックして接続（線クリックで切断）
+        </div>
+        <div id="flowStage" class="flow-stage">
+          <svg id="flowEdgesSvg" class="flow-edges-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div id="flowNodesLayer" class="flow-nodes-layer"></div>
+        </div>
       </main>
 
       <aside class="studio-inspector">

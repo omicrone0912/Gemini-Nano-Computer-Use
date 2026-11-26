@@ -1,7 +1,7 @@
 import { FLOW_PRESETS_STORAGE_KEY } from './constants.js';
 import { parsePlaybookContent } from './playbook.js';
 
-export const FLOW_NODE_TYPES = Object.freeze(['action', 'condition', 'ask_user', 'done']);
+export const FLOW_NODE_TYPES = Object.freeze(['start', 'action', 'condition', 'ask_user', 'done']);
 
 export const FLOW_ACTION_TYPES = Object.freeze([
   { value: 'navigate', label: 'URLへ移動 (navigate)' },
@@ -33,8 +33,19 @@ function generateId(prefix = 'node') {
 }
 
 export function createNode(type = 'action', overrides = {}) {
-  const id = overrides.id || generateId('node');
+  const id = overrides.id || generateId(type === 'start' ? 'start' : 'node');
+  const x = Number.isFinite(Number(overrides.x)) ? Math.round(Number(overrides.x)) : 460;
+  const y = Number.isFinite(Number(overrides.y)) ? Math.round(Number(overrides.y)) : 160;
+
   switch (type) {
+    case 'start':
+      return {
+        id: overrides.id || 'node_start',
+        type: 'start',
+        label: overrides.label ?? '開始',
+        x,
+        y
+      };
     case 'condition':
       return {
         id,
@@ -42,6 +53,8 @@ export function createNode(type = 'action', overrides = {}) {
         label: overrides.label ?? '条件分岐',
         conditionType: overrides.conditionType ?? 'text_contains',
         conditionValue: overrides.conditionValue ?? '',
+        x,
+        y,
         yesBranch: Array.isArray(overrides.yesBranch)
           ? overrides.yesBranch.map((n) => normalizeNode(n))
           : [],
@@ -54,14 +67,18 @@ export function createNode(type = 'action', overrides = {}) {
         id,
         type: 'ask_user',
         label: overrides.label ?? '人間に指示を仰ぐ',
-        message: overrides.message ?? '画面状態を確認し、次の指示を入力してください。'
+        message: overrides.message ?? '画面状態を確認し、次の指示を入力してください。',
+        x,
+        y
       };
     case 'done':
       return {
         id,
         type: 'done',
         label: overrides.label ?? 'フロー完了',
-        message: overrides.message ?? '手順フローが完了しました。結果を日本語で報告します。'
+        message: overrides.message ?? '手順フローが完了しました。結果を日本語で報告します。',
+        x,
+        y
       };
     case 'action':
     default:
@@ -74,7 +91,9 @@ export function createNode(type = 'action', overrides = {}) {
         value: overrides.value ?? '',
         url: overrides.url ?? '',
         ms: Number.isFinite(Number(overrides.ms)) ? Number(overrides.ms) : 1000,
-        notes: overrides.notes ?? ''
+        notes: overrides.notes ?? '',
+        x,
+        y
       };
   }
 }
@@ -87,19 +106,192 @@ export function normalizeNode(raw) {
   return createNode(type, raw);
 }
 
+function normalizeEdge(raw) {
+  if (!raw || typeof raw !== 'object' || !raw.from || !raw.to) return null;
+  const port = raw.port === 'yes' || raw.port === 'no' ? raw.port : 'next';
+  return {
+    id: String(raw.id || generateId('edge')),
+    from: String(raw.from),
+    port,
+    to: String(raw.to)
+  };
+}
+
+function migrateLegacyTreeToGraph(rawNodes) {
+  const startNode = createNode('start', { id: 'node_start', label: '開始', x: 460, y: 40 });
+  const graphNodes = [startNode];
+  const graphEdges = [];
+
+  const flattenSequence = (seq, incomingRefs) => {
+    let tails = incomingRefs; // Array<{ from, port }>
+    for (const item of seq) {
+      const node = normalizeNode(item);
+      const cleanNode = { ...node };
+      const yesBranch = Array.isArray(item.yesBranch) ? item.yesBranch : [];
+      const noBranch = Array.isArray(item.noBranch) ? item.noBranch : [];
+      if (cleanNode.type === 'condition') {
+        cleanNode.yesBranch = [];
+        cleanNode.noBranch = [];
+      }
+      graphNodes.push(cleanNode);
+
+      for (const inc of tails) {
+        graphEdges.push(
+          normalizeEdge({
+            from: inc.from,
+            port: inc.port,
+            to: cleanNode.id
+          })
+        );
+      }
+
+      if (cleanNode.type === 'condition') {
+        const yesTails =
+          yesBranch.length > 0
+            ? flattenSequence(yesBranch, [{ from: cleanNode.id, port: 'yes' }])
+            : [{ from: cleanNode.id, port: 'yes' }];
+        const noTails =
+          noBranch.length > 0
+            ? flattenSequence(noBranch, [{ from: cleanNode.id, port: 'no' }])
+            : [{ from: cleanNode.id, port: 'no' }];
+        tails = [...yesTails, ...noTails];
+      } else if (cleanNode.type === 'done') {
+        tails = [];
+      } else {
+        tails = [{ from: cleanNode.id, port: 'next' }];
+      }
+    }
+    return tails;
+  };
+
+  flattenSequence(rawNodes, [{ from: startNode.id, port: 'next' }]);
+  return { nodes: graphNodes, edges: graphEdges.filter(Boolean) };
+}
+
+export function autoLayoutGraph(preset) {
+  const nodes = Array.isArray(preset?.nodes) ? preset.nodes : [];
+  const edges = Array.isArray(preset?.edges) ? preset.edges : [];
+  if (nodes.length === 0) return preset;
+
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const startNode = nodes.find((n) => n.type === 'start') || nodes[0];
+  const outEdges = new Map();
+  for (const e of edges) {
+    if (!outEdges.has(e.from)) outEdges.set(e.from, []);
+    outEdges.get(e.from).push(e);
+  }
+
+  // BFS topological-like level & horizontal offset assignment
+  const depthMap = new Map();
+  const xHintMap = new Map();
+  const queue = [{ id: startNode.id, depth: 0, xHint: 480 }];
+  depthMap.set(startNode.id, 0);
+  xHintMap.set(startNode.id, 480);
+
+  while (queue.length > 0) {
+    const { id, depth, xHint } = queue.shift();
+    const outs = outEdges.get(id) || [];
+    for (const edge of outs) {
+      if (!nodeMap.has(edge.to)) continue;
+      let nextX = xHint;
+      if (edge.port === 'yes') nextX = xHint - 220;
+      else if (edge.port === 'no') nextX = xHint + 220;
+
+      const prevDepth = depthMap.get(edge.to);
+      if (prevDepth === undefined || prevDepth < depth + 1) {
+        depthMap.set(edge.to, depth + 1);
+        xHintMap.set(edge.to, nextX);
+        queue.push({ id: edge.to, depth: depth + 1, xHint: nextX });
+      }
+    }
+  }
+
+  // Place disconnected nodes neatly at the bottom
+  let maxDepth = 0;
+  for (const d of depthMap.values()) maxDepth = Math.max(maxDepth, d);
+  let orphanIdx = 0;
+  for (const n of nodes) {
+    if (!depthMap.has(n.id)) {
+      maxDepth += 1;
+      depthMap.set(n.id, maxDepth);
+      xHintMap.set(n.id, 480 + (orphanIdx % 2 === 0 ? 0 : 240));
+      orphanIdx += 1;
+    }
+  }
+
+  // Resolve horizontal collisions within the same depth row
+  const rows = new Map();
+  for (const n of nodes) {
+    const d = depthMap.get(n.id) ?? 0;
+    if (!rows.has(d)) rows.set(d, []);
+    rows.get(d).push(n);
+  }
+
+  for (const [depth, rowNodes] of rows.entries()) {
+    rowNodes.sort((a, b) => (xHintMap.get(a.id) ?? 480) - (xHintMap.get(b.id) ?? 480));
+    let prevX = -Infinity;
+    for (const n of rowNodes) {
+      let desiredX = Math.max(40, Math.round((xHintMap.get(n.id) ?? 480) / 20) * 20);
+      if (desiredX - prevX < 280) {
+        desiredX = prevX + 280;
+      }
+      n.x = desiredX;
+      n.y = 40 + depth * 170;
+      prevX = desiredX;
+    }
+  }
+
+  return preset;
+}
+
 export function validateWorkflowPreset(rawPreset) {
   if (!rawPreset || typeof rawPreset !== 'object') {
     throw new Error('プリセットデータが不正です。');
   }
   const name = String(rawPreset.name ?? '').trim() || '無題のフロー';
-  const nodes = Array.isArray(rawPreset.nodes) ? rawPreset.nodes.map((n) => normalizeNode(n)) : [];
+  const rawNodes = Array.isArray(rawPreset.nodes) ? rawPreset.nodes : [];
+  const hasEdgesArray = Array.isArray(rawPreset.edges);
+  const hasLegacyBranches = rawNodes.some(
+    (n) => (Array.isArray(n?.yesBranch) && n.yesBranch.length > 0) || (Array.isArray(n?.noBranch) && n.noBranch.length > 0)
+  );
+
+  let nodes;
+  let edges;
+
+  if (!hasEdgesArray || hasLegacyBranches) {
+    const migrated = migrateLegacyTreeToGraph(rawNodes);
+    nodes = migrated.nodes;
+    edges = migrated.edges;
+    const presetObj = {
+      id: String(rawPreset.id || generateId('preset')),
+      name,
+      description: String(rawPreset.description ?? '').trim(),
+      startUrl: String(rawPreset.startUrl ?? '').trim(),
+      updatedAt: Number(rawPreset.updatedAt) || Date.now(),
+      nodes,
+      edges
+    };
+    autoLayoutGraph(presetObj);
+    return presetObj;
+  }
+
+  nodes = rawNodes.map((n) => normalizeNode(n));
+  if (!nodes.some((n) => n.type === 'start')) {
+    nodes.unshift(createNode('start', { id: 'node_start', label: '開始', x: 460, y: 40 }));
+  }
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  edges = rawPreset.edges
+    .map((e) => normalizeEdge(e))
+    .filter((e) => e && e.from !== e.to && nodeIds.has(e.from) && nodeIds.has(e.to));
+
   return {
     id: String(rawPreset.id || generateId('preset')),
     name,
     description: String(rawPreset.description ?? '').trim(),
     startUrl: String(rawPreset.startUrl ?? '').trim(),
     updatedAt: Number(rawPreset.updatedAt) || Date.now(),
-    nodes
+    nodes,
+    edges
   };
 }
 
@@ -116,39 +308,54 @@ export function createDefaultPresets() {
       startUrl: 'https://ja.wikipedia.org',
       updatedAt: 1700000000000,
       nodes: [
+        createNode('start', { id: 'node_start', label: '開始', x: 480, y: 40 }),
         createNode('action', {
           id: 'n_nav_1',
           label: '開始ページを開く',
           actionType: 'navigate',
           url: 'https://ja.wikipedia.org',
-          notes: 'ページ読み込み完了を確認する'
+          notes: 'ページ読み込み完了を確認する',
+          x: 480,
+          y: 200
         }),
         createNode('condition', {
           id: 'n_cond_1',
           label: 'ログイン画面が表示されているか',
           conditionType: 'text_contains',
           conditionValue: 'ログイン',
-          yesBranch: [
-            createNode('ask_user', {
-              id: 'n_ask_login',
-              label: 'ログイン操作を依頼',
-              message: 'ログインが求められています。手動でログイン後、続行を押してください。'
-            })
-          ],
-          noBranch: [
-            createNode('action', {
-              id: 'n_pdf_save',
-              label: '画面をPDF保存＆読込',
-              actionType: 'download_page_pdf',
-              value: 'wikipedia-top.pdf'
-            })
-          ]
+          x: 480,
+          y: 360
+        }),
+        createNode('ask_user', {
+          id: 'n_ask_login',
+          label: 'ログイン操作を依頼',
+          message: 'ログインが求められています。手動でログイン後、続行を押してください。',
+          x: 240,
+          y: 540
+        }),
+        createNode('action', {
+          id: 'n_pdf_save',
+          label: '画面をPDF保存＆読込',
+          actionType: 'download_page_pdf',
+          value: 'wikipedia-top.pdf',
+          x: 720,
+          y: 540
         }),
         createNode('done', {
           id: 'n_done_1',
           label: '結果を報告して完了',
-          message: 'ページ内容（および保存したPDFの要点）を日本語でまとめて完了してください。'
+          message: 'ページ内容（および保存したPDFの要点）を日本語でまとめて完了してください。',
+          x: 480,
+          y: 720
         })
+      ],
+      edges: [
+        { id: 'e_1', from: 'node_start', port: 'next', to: 'n_nav_1' },
+        { id: 'e_2', from: 'n_nav_1', port: 'next', to: 'n_cond_1' },
+        { id: 'e_3', from: 'n_cond_1', port: 'yes', to: 'n_ask_login' },
+        { id: 'e_4', from: 'n_cond_1', port: 'no', to: 'n_pdf_save' },
+        { id: 'e_5', from: 'n_ask_login', port: 'next', to: 'n_done_1' },
+        { id: 'e_6', from: 'n_pdf_save', port: 'next', to: 'n_done_1' }
       ]
     }),
     validateWorkflowPreset({
@@ -158,50 +365,148 @@ export function createDefaultPresets() {
       startUrl: 'https://example.com',
       updatedAt: 1700000000001,
       nodes: [
+        createNode('start', { id: 'node_start', label: '開始', x: 480, y: 40 }),
         createNode('action', {
           id: 'n_tab_1',
           label: '1つ目のサイトを確認',
           actionType: 'navigate',
-          url: 'https://example.com'
+          url: 'https://example.com',
+          x: 480,
+          y: 200
         }),
         createNode('action', {
           id: 'n_tab_2',
           label: '別タブで2つ目のサイトを開く',
           actionType: 'open_tab',
-          url: 'https://ja.wikipedia.org'
+          url: 'https://ja.wikipedia.org',
+          x: 480,
+          y: 360
         }),
         createNode('condition', {
           id: 'n_cond_2',
           label: '検索ボックスが表示されているか',
           conditionType: 'element_visible',
           conditionValue: '検索',
-          yesBranch: [
-            createNode('action', {
-              id: 'n_type_search',
-              label: '「生成AI」を検索',
-              actionType: 'type',
-              target: '検索入力欄',
-              value: '生成AI'
-            })
-          ],
-          noBranch: [
-            createNode('action', {
-              id: 'n_scroll_check',
-              label: 'ページ下部を確認',
-              actionType: 'scroll',
-              value: 'down'
-            })
-          ]
+          x: 480,
+          y: 520
+        }),
+        createNode('action', {
+          id: 'n_type_search',
+          label: '「生成AI」を検索',
+          actionType: 'type',
+          target: '検索入力欄',
+          value: '生成AI',
+          x: 240,
+          y: 700
+        }),
+        createNode('action', {
+          id: 'n_scroll_check',
+          label: 'ページ下部を確認',
+          actionType: 'scroll',
+          value: 'down',
+          x: 720,
+          y: 700
         }),
         createNode('done', {
           id: 'n_done_2',
           label: '比較結果をまとめて完了',
-          message: 'タブグループ内の各タブで確認した内容を比較し、日本語で報告してください。'
+          message: 'タブグループ内の各タブで確認した内容を比較し、日本語で報告してください。',
+          x: 480,
+          y: 880
         })
+      ],
+      edges: [
+        { id: 'e_m1', from: 'node_start', port: 'next', to: 'n_tab_1' },
+        { id: 'e_m2', from: 'n_tab_1', port: 'next', to: 'n_tab_2' },
+        { id: 'e_m3', from: 'n_tab_2', port: 'next', to: 'n_cond_2' },
+        { id: 'e_m4', from: 'n_cond_2', port: 'yes', to: 'n_type_search' },
+        { id: 'e_m5', from: 'n_cond_2', port: 'no', to: 'n_scroll_check' },
+        { id: 'e_m6', from: 'n_type_search', port: 'next', to: 'n_done_2' },
+        { id: 'e_m7', from: 'n_scroll_check', port: 'next', to: 'n_done_2' }
       ]
     })
   ];
 }
+
+// --- Graph Manipulation Helpers ---
+
+export function addGraphNode(preset, type, overrides = {}) {
+  if (!preset || type === 'start') return null;
+  const node = createNode(type, overrides);
+  preset.nodes.push(node);
+  return node;
+}
+
+export function updateGraphNode(preset, nodeId, patch) {
+  const idx = preset?.nodes?.findIndex((n) => n.id === nodeId) ?? -1;
+  if (idx === -1) return false;
+  const existing = preset.nodes[idx];
+  preset.nodes[idx] = normalizeNode({
+    ...existing,
+    ...patch,
+    id: existing.id,
+    type: existing.type
+  });
+  return true;
+}
+
+export function moveGraphNodePosition(preset, nodeId, x, y) {
+  const node = preset?.nodes?.find((n) => n.id === nodeId);
+  if (!node) return false;
+  node.x = Math.max(20, Math.round(x));
+  node.y = Math.max(20, Math.round(y));
+  return true;
+}
+
+export function removeGraphNode(preset, nodeId) {
+  if (!preset) return false;
+  const target = preset.nodes.find((n) => n.id === nodeId);
+  if (!target || target.type === 'start') return false;
+  preset.nodes = preset.nodes.filter((n) => n.id !== nodeId);
+  preset.edges = preset.edges.filter((e) => e.from !== nodeId && e.to !== nodeId);
+  return true;
+}
+
+export function connectNodes(preset, fromId, port = 'next', toId) {
+  if (!preset || !fromId || !toId || fromId === toId) {
+    return null;
+  }
+  const fromNode = preset.nodes.find((n) => n.id === fromId);
+  const toNode = preset.nodes.find((n) => n.id === toId);
+  if (!fromNode || !toNode || toNode.type === 'start' || fromNode.type === 'done') {
+    return null;
+  }
+
+  const normalizedPort =
+    fromNode.type === 'condition'
+      ? port === 'no'
+        ? 'no'
+        : 'yes'
+      : 'next';
+
+  // Replace any existing edge from the exact same (fromId, port)
+  preset.edges = preset.edges.filter(
+    (e) => !(e.from === fromId && e.port === normalizedPort)
+  );
+
+  const edge = {
+    id: generateId('edge'),
+    from: fromId,
+    port: normalizedPort,
+    to: toId
+  };
+  preset.edges.push(edge);
+  return edge;
+}
+
+export function disconnectEdge(preset, edgeId) {
+  if (!preset) return false;
+  const prevLen = preset.edges.length;
+  preset.edges = preset.edges.filter((e) => e.id !== edgeId);
+  return preset.edges.length !== prevLen;
+}
+
+// --- Legacy Tree Manipulation Helpers (kept for compatibility) ---
 
 function walkNodeList(list, visitor) {
   for (let i = 0; i < list.length; i += 1) {
@@ -209,8 +514,8 @@ function walkNodeList(list, visitor) {
     const stop = visitor(node, list, i);
     if (stop) return true;
     if (node.type === 'condition') {
-      if (walkNodeList(node.yesBranch, visitor)) return true;
-      if (walkNodeList(node.noBranch, visitor)) return true;
+      if (walkNodeList(node.yesBranch || [], visitor)) return true;
+      if (walkNodeList(node.noBranch || [], visitor)) return true;
     }
   }
   return false;
@@ -279,6 +584,8 @@ export function moveNodeById(nodes, nodeId, direction) {
   return true;
 }
 
+// --- Compilation & Graph Traversal ---
+
 function formatActionLine(node) {
   const tag = node.actionType === 'ai_step' ? 'ai_step' : node.actionType;
   const parts = [`[${tag}]`, node.label || node.actionType];
@@ -297,63 +604,140 @@ function formatConditionLabel(node) {
   return `${node.label || '条件判定'}【条件: ${typeLabel}${valPart}】`;
 }
 
-function renderNodesMarkdown(nodes, prefixNum = '', indent = '') {
+function renderGraphMarkdownFromNode(nodeId, nodeMap, edgesByFrom, prefixNum = '', indent = '', pathSet = new Set(), stepCounter = { count: 0 }, renderedLabels = new Map()) {
   const lines = [];
-  nodes.forEach((node, idx) => {
-    const stepNum = prefixNum ? `${prefixNum}.${idx + 1}` : `${idx + 1}`;
+  let currentId = nodeId;
+  let localIdx = 0;
+
+  while (currentId) {
+    const node = nodeMap.get(currentId);
+    if (!node) break;
+
+    if (pathSet.has(currentId)) {
+      lines.push(`${indent}- ↪ 「${node.label || currentId}」へ戻る（ループ）`);
+      break;
+    }
+
+    if (node.type === 'start') {
+      const nextEdge = (edgesByFrom.get(currentId) || []).find((e) => e.port === 'next');
+      currentId = nextEdge?.to || null;
+      continue;
+    }
+
+    if (renderedLabels.has(currentId)) {
+      lines.push(`${indent}- ➔ 共通ステップ「${node.label}」(${renderedLabels.get(currentId)}) へ合流する`);
+      break;
+    }
+
+    localIdx += 1;
+    stepCounter.count += 1;
+    const stepNum = prefixNum ? `${prefixNum}.${localIdx}` : `${localIdx}`;
+    renderedLabels.set(currentId, `ステップ ${stepNum}`);
+
+    const nextPath = new Set(pathSet);
+    nextPath.add(currentId);
+
+    const outs = edgesByFrom.get(currentId) || [];
+
     if (node.type === 'condition') {
       lines.push(`${indent}${stepNum}. **IF（条件分岐）**: ${formatConditionLabel(node)}`);
+      const yesEdge = outs.find((e) => e.port === 'yes');
+      const noEdge = outs.find((e) => e.port === 'no');
+
       lines.push(`${indent}   - **YES（条件に一致する場合）**:`);
-      if (node.yesBranch.length === 0) {
-        lines.push(`${indent}     - （特になし → 次のステップへ進む）`);
+      if (!yesEdge) {
+        lines.push(`${indent}     - [ask_user] YES 側の後続処理が未接続です。人間に確認してください。`);
       } else {
-        lines.push(...renderNodesMarkdown(node.yesBranch, `${stepNum}Y`, `${indent}     `));
+        lines.push(
+          ...renderGraphMarkdownFromNode(
+            yesEdge.to,
+            nodeMap,
+            edgesByFrom,
+            `${stepNum}Y`,
+            `${indent}     `,
+            nextPath,
+            stepCounter,
+            renderedLabels
+          )
+        );
       }
+
       lines.push(`${indent}   - **NO（条件に一致しない場合）**:`);
-      if (node.noBranch.length === 0) {
-        lines.push(`${indent}     - （特になし → 次のステップへ進む）`);
+      if (!noEdge) {
+        lines.push(`${indent}     - [ask_user] NO 側の後続処理が未接続です。人間に確認してください。`);
       } else {
-        lines.push(...renderNodesMarkdown(node.noBranch, `${stepNum}N`, `${indent}     `));
+        lines.push(
+          ...renderGraphMarkdownFromNode(
+            noEdge.to,
+            nodeMap,
+            edgesByFrom,
+            `${stepNum}N`,
+            `${indent}     `,
+            nextPath,
+            stepCounter,
+            renderedLabels
+          )
+        );
       }
-    } else if (node.type === 'ask_user') {
+      break;
+    }
+
+    if (node.type === 'ask_user') {
       lines.push(`${indent}${stepNum}. [ask_user] ${node.label || '人間へ確認'}: 「${node.message}」`);
     } else if (node.type === 'done') {
       lines.push(`${indent}${stepNum}. [done] ${node.label || '完了'}: 「${node.message}」`);
+      break;
     } else {
       lines.push(`${indent}${stepNum}. ${formatActionLine(node)}`);
     }
-  });
+
+    const nextEdge = outs.find((e) => e.port === 'next');
+    currentId = nextEdge?.to || null;
+  }
+
   return lines;
 }
 
 /**
- * Compile a visual flowchart preset into a strict AI-readable Playbook object.
+ * Compile a graph-based flowchart preset into a strict AI-readable Playbook object.
  */
 export function compileWorkflowToPlaybook(rawPreset) {
   const preset = validateWorkflowPreset(rawPreset);
+  const nodeMap = new Map(preset.nodes.map((n) => [n.id, n]));
+  const edgesByFrom = new Map();
+  for (const e of preset.edges) {
+    if (!edgesByFrom.has(e.from)) edgesByFrom.set(e.from, []);
+    edgesByFrom.get(e.from).push(e);
+  }
+
+  const startNode = preset.nodes.find((n) => n.type === 'start') || preset.nodes[0];
+  const stepLines = startNode
+    ? renderGraphMarkdownFromNode(startNode.id, nodeMap, edgesByFrom)
+    : [];
+
   const lines = [];
   lines.push(`# 手順書タイトル: ${preset.name}`);
   lines.push('');
   lines.push('## 目的');
-  lines.push(preset.description || `フローチャートプリセット「${preset.name}」の条件分岐と手順に従って正確に実行する。`);
+  lines.push(preset.description || `フローチャートプリセット「${preset.name}」の条件分岐と接続順序に従って正確に実行する。`);
 
   if (preset.startUrl) {
     lines.push('', '## 開始URL', preset.startUrl);
   }
 
   lines.push('', '## 前提条件・実行ルール（必守）');
-  lines.push('- 必ず下記のフローチャート（実行ステップおよび IF / YES / NO 分岐）の順序通りに実行すること。');
+  lines.push('- 必ず下記のフローチャート（接続されたノード順序および IF / YES / NO 分岐）通りに実行すること。');
   lines.push('- フローに記載のない状況・対象要素が見つからない場合・分岐条件の判定に迷う場合は、推測で進めず必ず [ask_user] で人間に指示を仰ぐこと。');
 
   lines.push('', '## 実行ステップ（フローチャート）');
-  if (preset.nodes.length === 0) {
-    lines.push('1. [ask_user] フローにステップが定義されていません。実行内容を確認してください。');
+  if (stepLines.length === 0) {
+    lines.push('1. [ask_user] 開始ノードから接続されたステップがありません。フローを確認してください。');
   } else {
-    lines.push(...renderNodesMarkdown(preset.nodes));
+    lines.push(...stepLines);
   }
 
   lines.push('', '## 確認ポイント（完了条件）');
-  lines.push('- すべてのフローおよび該当する条件分岐（YES / NO）を完了していること。');
+  lines.push('- 接続されたすべてのフローおよび該当する条件分岐（YES / NO）を完了していること。');
 
   const markdown = lines.join('\n');
   const playbook = parsePlaybookContent(markdown, `${preset.id}.flow.md`);
@@ -363,6 +747,56 @@ export function compileWorkflowToPlaybook(rawPreset) {
     presetName: preset.name,
     startUrl: preset.startUrl || playbook.startUrl
   };
+}
+
+/**
+ * Build a simplified nested structure from graph preset for Side Panel mini-preview.
+ */
+export function buildPreviewStepsFromGraph(rawPreset) {
+  const preset = validateWorkflowPreset(rawPreset);
+  const nodeMap = new Map(preset.nodes.map((n) => [n.id, n]));
+  const edgesByFrom = new Map();
+  for (const e of preset.edges) {
+    if (!edgesByFrom.has(e.from)) edgesByFrom.set(e.from, []);
+    edgesByFrom.get(e.from).push(e);
+  }
+
+  const walk = (startId, visited = new Set()) => {
+    const out = [];
+    let currentId = startId;
+    while (currentId && !visited.has(currentId)) {
+      const node = nodeMap.get(currentId);
+      if (!node) break;
+      visited.add(currentId);
+
+      if (node.type === 'start') {
+        const nextEdge = (edgesByFrom.get(currentId) || []).find((e) => e.port === 'next');
+        currentId = nextEdge?.to || null;
+        continue;
+      }
+
+      const outs = edgesByFrom.get(currentId) || [];
+      if (node.type === 'condition') {
+        const yesEdge = outs.find((e) => e.port === 'yes');
+        const noEdge = outs.find((e) => e.port === 'no');
+        out.push({
+          ...node,
+          yesBranch: yesEdge ? walk(yesEdge.to, new Set(visited)) : [],
+          noBranch: noEdge ? walk(noEdge.to, new Set(visited)) : []
+        });
+        break;
+      }
+
+      out.push(node);
+      if (node.type === 'done') break;
+      const nextEdge = outs.find((e) => e.port === 'next');
+      currentId = nextEdge?.to || null;
+    }
+    return out;
+  };
+
+  const startNode = preset.nodes.find((n) => n.type === 'start');
+  return startNode ? walk(startNode.id) : [];
 }
 
 /**

@@ -30,4 +30,8 @@ test('sidepanel.html and offscreen.html contain no inline styles or inline scrip
   assert.doesNotMatch(studioHtml, /\sstyle\s*=/i);
   assert.doesNotMatch(studioHtml, /<style[\s>]/i);
   assert.doesNotMatch(studioHtml, /<script(?![^>]*\bsrc=)[^>]*>/i);
+
+  const studioJs = readFileSync('studio/studio.js', 'utf8');
+  assert.doesNotMatch(studioJs, /\.cssText\b/);
+  assert.doesNotMatch(studioJs, /setAttribute\(\s*['"]style['"]/i);
 });

@@ -24,6 +24,7 @@ import {
 } from '../shared/playbook.js';
 import {
   WorkflowPresetStore,
+  buildPreviewStepsFromGraph,
   compileWorkflowToPlaybook
 } from '../shared/workflow-flow.js';
 import { annotateScreenshot } from './annotator.js';
@@ -1516,7 +1517,8 @@ function renderFlowPreview() {
   els.flowPreviewCard.classList.remove('hidden');
   els.flowPreviewTitle.textContent = `プレビュー: ${preset.name}`;
   els.flowMiniDiagram.innerHTML = '';
-  renderMiniNodes(preset.nodes, els.flowMiniDiagram);
+  const previewNodes = buildPreviewStepsFromGraph(preset);
+  renderMiniNodes(previewNodes, els.flowMiniDiagram);
 }
 
 function renderFlowPresetViews() {

@@ -42,3 +42,21 @@ test('buildStepPrompt guides navigation on restricted pages', () => {
   assert.match(prompt, /Chrome の保護領域/);
   assert.match(prompt, /navigate/);
 });
+
+test('buildStepPrompt includes loaded PDF context when present', () => {
+  const prompt = buildStepPrompt({
+    goal: 'PDFを要約する',
+    snapshot: { restricted: false, url: 'https://example.com', title: 'Example', elements: [] },
+    pdfContext: {
+      filename: 'spec.pdf',
+      pageCount: 5,
+      currentPage: 2,
+      currentPageText: '第2章: ローカルPDF解析の仕様'
+    }
+  });
+
+  assert.match(prompt, /# 読み込み中の PDF/);
+  assert.match(prompt, /spec\.pdf/);
+  assert.match(prompt, /ページ: 2 \/ 5/);
+  assert.match(prompt, /ローカルPDF解析の仕様/);
+});

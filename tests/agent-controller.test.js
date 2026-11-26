@@ -136,3 +136,46 @@ test('AgentController stop() cancels an active run', async () => {
 
   assert.equal(outcome.status, 'stopped');
 });
+
+test('AgentController passes pdfContext from observe to prompt and handles download_page_pdf', async () => {
+  const promptsSeen = [];
+  let step = 0;
+
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction({ promptText }) {
+        promptsSeen.push(promptText);
+        step += 1;
+        if (step === 1) {
+          return { action: { thought: 'PDF保存', action: 'download_page_pdf' }, usage: {} };
+        }
+        return { action: { thought: '要約完了', action: 'done', message: 'PDFを確認しました' }, usage: {} };
+      }
+    },
+    async observe() {
+      return {
+        snapshot: { restricted: false, url: 'https://example.com', title: 'Doc', elements: [] },
+        pdfContext: step >= 1 ? { filename: 'Doc.pdf', pageCount: 1, currentPage: 1, currentPageText: '本文テスト' } : null
+      };
+    },
+    async executeAction(action) {
+      if (action.action === 'download_page_pdf') {
+        return { ok: true, detail: '保存完了', promptNote: '保存済PDF Doc.pdf' };
+      }
+      return { ok: true };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '画面をPDF保存して要約',
+    settings: { maxSteps: 4, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'completed');
+  assert.equal(promptsSeen.length, 2);
+  assert.match(promptsSeen[1], /Doc\.pdf/);
+  assert.match(promptsSeen[1], /本文テスト/);
+});

@@ -11,6 +11,8 @@ export const SYSTEM_PROMPT = `あなたは Google Chrome の画面を操作す�
 - go_back: ブラウザの「戻る」を実行
 - go_forward: ブラウザの「進む」を実行
 - wait: 読み込みやアニメーション完了を待つ（必須: ms: 200〜5000）
+- download_page_pdf: 現在のWeb画面をPDFとしてローカル保存し、自動で読み込む（任意: filename）
+- read_pdf: 読み込み済みのPDFから指定ページのテキストを取得する（任意: page ※デフォルト1）
 - ask_user: ログイン・CAPTCHA・判断に迷う場合にユーザーへ尋ねる（必須: message）
 - done: 目標を達成した、またはこれ以上実行できない場合に完了する（必須: message）
 
@@ -73,7 +75,12 @@ function formatHistory(history) {
       if (a.url) detailParts.push(`url=${truncate(a.url, 48)}`);
       if (a.direction) detailParts.push(a.direction);
       if (a.key) detailParts.push(a.key);
-      const status = item.result?.ok ? '成功' : `失敗(${item.result?.error || 'error'})`;
+      if (a.page) detailParts.push(`page=${a.page}`);
+      const status = item.result?.ok
+        ? item.result?.promptNote
+          ? `成功(${truncate(item.result.promptNote, 240)})`
+          : '成功'
+        : `失敗(${item.result?.error || 'error'})`;
       return `- Step ${item.step}: ${detailParts.join(' ')} -> ${status}`;
     })
     .join('\n');
@@ -89,7 +96,8 @@ export function buildStepPrompt({
   stepIndex = 1,
   maxSteps = 15,
   hasImage = false,
-  loopWarning = ''
+  loopWarning = '',
+  pdfContext = null
 }) {
   const sections = [];
   sections.push(`# 目標\n${goal}`);
@@ -127,6 +135,15 @@ export function buildStepPrompt({
   }
 
   sections.push(`# 直近の操作履歴\n${formatHistory(history)}`);
+
+  if (pdfContext && pdfContext.pageCount > 0) {
+    const snippet = truncate(pdfContext.currentPageText || '', 1400);
+    sections.push(
+      `# 読み込み中の PDF\nファイル名: ${pdfContext.filename || '(名称未設定.pdf)'}\nページ: ${pdfContext.currentPage || 1} / ${pdfContext.pageCount}\n${
+        snippet ? `現在ページ抜粋:\n${snippet}` : '（テキストを抽出できないスキャン/画像中心の PDF です。他ページを確認する場合は read_pdf を使ってください）'
+      }`
+    );
+  }
 
   if (loopWarning) {
     sections.push(`# 注意\n${loopWarning}`);

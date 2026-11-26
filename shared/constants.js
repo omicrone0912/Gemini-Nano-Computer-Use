@@ -8,6 +8,8 @@ export const ACTION_TYPES = Object.freeze([
   'go_back',
   'go_forward',
   'wait',
+  'download_page_pdf',
+  'read_pdf',
   'done',
   'ask_user'
 ]);
@@ -56,6 +58,10 @@ export const SAMPLE_TASKS = Object.freeze([
   {
     label: 'ページ下部へスクロール',
     goal: '現在のページを下方向にスクロールしてフッター付近のリンク一覧を確認し、内容を報告して完了してください。'
+  },
+  {
+    label: '画面をPDF保存＆読込',
+    goal: '現在開いている画面を PDF としてダウンロードして読み込み、1ページ目の内容を確認して日本語で要約してください。'
   }
 ]);
 
@@ -67,5 +73,8 @@ export const MSG_TYPES = Object.freeze({
   CAPTURE_TAB: 'NANO_CU_CAPTURE_TAB',
   NAVIGATE_TAB: 'NANO_CU_NAVIGATE_TAB',
   HISTORY_BACK: 'NANO_CU_HISTORY_BACK',
-  HISTORY_FORWARD: 'NANO_CU_HISTORY_FORWARD'
+  HISTORY_FORWARD: 'NANO_CU_HISTORY_FORWARD',
+  PRINT_TAB_TO_PDF: 'NANO_CU_PRINT_TAB_TO_PDF',
+  GET_RECENT_PDF_DOWNLOADS: 'NANO_CU_GET_RECENT_PDF_DOWNLOADS',
+  SHOW_DOWNLOAD_IN_FOLDER: 'NANO_CU_SHOW_DOWNLOAD_IN_FOLDER'
 });

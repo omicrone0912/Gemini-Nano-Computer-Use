@@ -50,6 +50,14 @@ export const ACTION_RESPONSE_SCHEMA = Object.freeze({
       type: 'boolean',
       description: 'type 実行前に既存の入力値を消去するかどうか'
     },
+    filename: {
+      type: 'string',
+      description: 'download_page_pdf で保存する PDF ファイル名（任意）'
+    },
+    page: {
+      type: 'integer',
+      description: 'read_pdf で読み込むページ番号（1始まり）'
+    },
     message: {
       type: 'string',
       description: 'done または ask_user 時にユーザーへ伝えるメッセージ'
@@ -74,7 +82,12 @@ const ACTION_ALIASES = Object.freeze({
   key: 'press_key',
   keypress: 'press_key',
   press: 'press_key',
-  ask: 'ask_user'
+  ask: 'ask_user',
+  save_pdf: 'download_page_pdf',
+  print_pdf: 'download_page_pdf',
+  export_pdf: 'download_page_pdf',
+  inspect_pdf: 'read_pdf',
+  pdf_read: 'read_pdf'
 });
 
 const VALID_DIRECTIONS = new Set(['up', 'down', 'top', 'bottom']);
@@ -218,6 +231,15 @@ export function parseActionResponse(rawText) {
     action.message = String(parsed.message).trim();
   }
 
+  if (parsed.filename !== undefined && parsed.filename !== null && String(parsed.filename).trim()) {
+    action.filename = String(parsed.filename).trim();
+  }
+
+  const pageNum = toOptionalPositiveInt(parsed.page ?? parsed.pageNumber);
+  if (pageNum !== undefined) {
+    action.page = pageNum;
+  }
+
   // Action-specific required fields & sensible defaults
   switch (normalizedAction) {
     case 'click':
@@ -259,6 +281,11 @@ export function parseActionResponse(rawText) {
     case 'wait':
       if (!action.ms) {
         action.ms = 1000;
+      }
+      break;
+    case 'read_pdf':
+      if (!action.page) {
+        action.page = 1;
       }
       break;
     case 'done':

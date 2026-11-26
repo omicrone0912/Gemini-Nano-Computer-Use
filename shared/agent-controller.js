@@ -47,6 +47,10 @@ function summarizeAction(action) {
       return '次のページへ進む';
     case 'wait':
       return `${action.ms}ms 待機`;
+    case 'download_page_pdf':
+      return `現在画面を PDF として保存・読み込み${action.filename ? ` (${action.filename})` : ''}`;
+    case 'read_pdf':
+      return `PDF の ${action.page || 1} ページ目を読み込み`;
     case 'ask_user':
       return `ユーザー確認: ${action.message}`;
     case 'done':
@@ -166,6 +170,7 @@ export class AgentController {
 
         const snapshot = observation?.snapshot ?? { restricted: true, url: '', title: '', elements: [] };
         const image = observation?.image ?? null;
+        const pdfContext = observation?.pdfContext ?? null;
 
         this.emit('observation_captured', {
           step,
@@ -187,7 +192,8 @@ export class AgentController {
           stepIndex: step,
           maxSteps: merged.maxSteps,
           hasImage: Boolean(image && initResult.multimodal),
-          loopWarning
+          loopWarning,
+          pdfContext
         });
         loopWarning = '';
 

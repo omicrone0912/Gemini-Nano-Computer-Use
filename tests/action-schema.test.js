@@ -49,3 +49,17 @@ test('parseActionResponse rejects unsupported actions or missing elementId', () 
   assert.throws(() => parseActionResponse('{"thought":"x","action":"click"}'), /elementId/);
   assert.throws(() => extractJsonObjectString('no json here'), /JSON オブジェクトが見つかりません/);
 });
+
+test('parseActionResponse normalizes download_page_pdf and read_pdf actions', () => {
+  const dl = parseActionResponse('{"thought":"PDF保存","action":"save_pdf","filename":"summary.pdf"}');
+  assert.equal(dl.action, 'download_page_pdf');
+  assert.equal(dl.filename, 'summary.pdf');
+
+  const rdDefault = parseActionResponse('{"thought":"PDF読込","action":"read_pdf"}');
+  assert.equal(rdDefault.action, 'read_pdf');
+  assert.equal(rdDefault.page, 1);
+
+  const rdPage = parseActionResponse('{"thought":"3ページ目","action":"inspect_pdf","page":"3"}');
+  assert.equal(rdPage.action, 'read_pdf');
+  assert.equal(rdPage.page, 3);
+});

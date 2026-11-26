@@ -18,13 +18,18 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
   - 「自動（危険操作のみ確認）」と「ステップ実行（毎回確認）」を切り替えられ、いつでも「緊急停止」可能です。
 - **Side Panel UI**
   - 各ステップの思考内容・アクション・実行結果・注釈付きスクリーンショットのサムネイル（クリックで拡大）をタイムラインで確認できます。
+- **PDF ダウンロード・ローカル読み込み・PDF 閲覧**
+  - **画面の PDF ダウンロード＆自動読み込み**: 現在開いているタブを Chrome DevTools Protocol (`Page.printToPDF`) で PDF 化してローカル保存し、即座に拡張機能内へ読み込めます（手動ボタン・AI アクション `download_page_pdf` の両方に対応）。
+  - **ローカル PDF の読み込み**: ファイル選択やドラッグ＆ドロップで手元の PDF を拡張機能へ直接読み込めます（外部アップロードなし）。
+  - **PDF 閲覧 & テキスト抽出**: サイドパネル内の Chrome ネイティブ PDF プレビュー（`blob:` URL 表示・新しいタブで閲覧対応）と、純粋 JS ローカル PDF パーサー（`/FlateDecode`・`/ToUnicode` CMap 対応）によるページ別テキスト抽出・コピー、AI アクション `read_pdf` による要約が可能です。
 
 ## プライバシー・ローカル完結設計（外部情報漏洩防止）
 
-この拡張機能は、入力したプロンプトや閲覧中の画面情報・操作履歴が外部サーバーへ送信されたり、AI モデルの学習に利用されたりしない設計になっています。
+この拡張機能は、入力したプロンプトや閲覧中の画面情報・操作履歴・読み込んだ PDF データが外部サーバーへ送信されたり、AI モデルの学習に利用されたりしない設計になっています。
 
 - **完全オンデバイス推論**: 推論には Google Chrome 内蔵の `LanguageModel` API（Gemini Nano）のみを使用し、外部 AI API への送信やテレメトリ収集は一切行いません。
-- **CSP による外部通信の強制遮断**: [manifest.json](manifest.json) の `content_security_policy.extension_pages` に `connect-src 'none'` を設定し、拡張機能ページ（サイドパネル／Service Worker）からの外部ネットワーク通信をブラウザレベルで禁止しています（画面注釈表示用の `data:` / `blob:` 画像のみ許可）。
+- **CSP による外部通信の強制遮断**: [manifest.json](manifest.json) の `content_security_policy.extension_pages` に `connect-src 'none'` を設定し、拡張機能ページ（サイドパネル／Service Worker）からの外部ネットワーク通信をブラウザレベルで禁止しています（画面注釈表示やローカル PDF プレビュー用の `data:` / `blob:` のみ許可）。
+- **追加権限について**: 画面の PDF 生成 (`Page.printToPDF`) とローカル保存・履歴参照のために `debugger` と `downloads` 権限を使用しますが、すべての処理はブラウザ内およびローカルディスク上で完結します。
 - **ローカル限定ストレージとメモリ管理**: 設定はクラウド同期されない `chrome.storage.local` のみに保存します。操作中の DOM 情報・スクリーンショット・プロンプト履歴はメモリ上のみで扱い、各ステップ終了時に推論セッションを `destroy()` で破棄します。
 - **機密情報の保護**: `type="password"` の入力値はプロンプト生成時に `***` へマスクされ、パスワード入力・フォーム送信・購入・削除などの操作前には確認カードでユーザー承認を求めます。
 
@@ -53,6 +58,7 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   ├── safety.js                 # URL 検証・危険操作検出・ループ検出
 │   ├── prompt-builder.js         # システム/ステッププロンプト生成
 │   ├── nano-client.js            # Chrome Prompt API (Gemini Nano) ラッパー
+│   ├── pdf-parser.js             # 純粋 JS ローカル PDF 解析・テキスト抽出
 │   └── agent-controller.js       # Observe -> Think -> Guard -> Act 制御ループ
 ├── scripts/
 │   └── generate-icons.mjs        # 拡張機能 PNG アイコン生成スクリプト

@@ -6,6 +6,7 @@ import {
   MSG_TYPES
 } from '../shared/constants.js';
 import { NanoClient } from '../shared/nano-client.js';
+import { isSupportedViewerUrl } from '../shared/media-viewer.js';
 import {
   base64ToUint8Array,
   extractPdfPageSnippet,
@@ -48,6 +49,7 @@ const els = {
   useVisionCheckbox: document.getElementById('useVisionCheckbox'),
   allowBackgroundCheckbox: document.getElementById('allowBackgroundCheckbox'),
   allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
+  useBuiltInViewerCheckbox: document.getElementById('useBuiltInViewerCheckbox'),
   runBtn: document.getElementById('runBtn'),
   stopBtn: document.getElementById('stopBtn'),
   clearLogBtn: document.getElementById('clearLogBtn'),
@@ -92,6 +94,7 @@ const els = {
   pdfSummaryBadge: document.getElementById('pdfSummaryBadge'),
   capturePagePdfBtn: document.getElementById('capturePagePdfBtn'),
   openPdfFileBtn: document.getElementById('openPdfFileBtn'),
+  openMediaViewerBtn: document.getElementById('openMediaViewerBtn'),
   pdfFileInput: document.getElementById('pdfFileInput'),
   pdfDropZone: document.getElementById('pdfDropZone'),
   pdfStatusBanner: document.getElementById('pdfStatusBanner'),
@@ -177,8 +180,21 @@ async function loadSettings() {
     els.useVisionCheckbox.checked = Boolean(saved.useVision);
     els.allowBackgroundCheckbox.checked = Boolean(saved.allowBackgroundExecution);
     els.allowMultiTabCheckbox.checked = Boolean(saved.allowMultiTab);
+    els.useBuiltInViewerCheckbox.checked = saved.useBuiltInViewer !== false;
   } catch {
     // Ignore storage error
+  }
+}
+
+async function syncViewerInterceptConfig(extra = {}) {
+  try {
+    await chrome.runtime.sendMessage({
+      type: MSG_TYPES.SET_VIEWER_INTERCEPT_CONFIG,
+      enabled: Boolean(els.useBuiltInViewerCheckbox?.checked),
+      ...extra
+    });
+  } catch {
+    // Ignore sync error
   }
 }
 
@@ -189,6 +205,7 @@ async function saveSettings() {
   } catch {
     // Ignore storage error
   }
+  await syncViewerInterceptConfig();
 }
 
 function collectSettings() {
@@ -199,7 +216,8 @@ function collectSettings() {
     maxSteps,
     useVision: Boolean(els.useVisionCheckbox.checked),
     allowBackgroundExecution: Boolean(els.allowBackgroundCheckbox.checked),
-    allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked)
+    allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked),
+    useBuiltInViewer: Boolean(els.useBuiltInViewerCheckbox.checked)
   };
 }
 
@@ -299,7 +317,52 @@ async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
   });
 
   let snapshot;
-  if (ensureRes?.restricted) {
+  let image = null;
+  let previewDataUrl = null;
+  let pdfContext = getLoadedPdfContext();
+
+  if (ensureRes?.isViewer) {
+    const viewerSnap = await chrome.runtime
+      .sendMessage({
+        type: MSG_TYPES.VIEWER_CAPTURE_SNAPSHOT,
+        targetTabId: tab.id,
+        maxImageWidth
+      })
+      .catch(() => null);
+    snapshot = viewerSnap?.snapshot || {
+      restricted: false,
+      url: tab.url || '',
+      title: tab.title || 'Gemini Nano 簡易ビュワー',
+      elements: [],
+      textExcerpt: '簡易ビュワーを読み込み中です。'
+    };
+    if (viewerSnap?.viewerPdfContext) {
+      pdfContext = viewerSnap.viewerPdfContext;
+    }
+    if (viewerSnap?.viewerImageDataUrl) {
+      try {
+        const annotated = await annotateScreenshot(viewerSnap.viewerImageDataUrl, { elements: [] }, maxImageWidth);
+        if (useVision) image = annotated.blob;
+        previewDataUrl = annotated.previewDataUrl;
+      } catch {
+        previewDataUrl = viewerSnap.viewerImageDataUrl;
+      }
+    } else if (useVision && tab.active) {
+      const capRes = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.CAPTURE_TAB,
+        windowId: tab.windowId
+      });
+      if (capRes?.ok && capRes.dataUrl) {
+        try {
+          const annotated = await annotateScreenshot(capRes.dataUrl, snapshot, maxImageWidth);
+          image = annotated.blob;
+          previewDataUrl = annotated.previewDataUrl;
+        } catch {
+          // Ignore
+        }
+      }
+    }
+  } else if (ensureRes?.restricted) {
     snapshot = {
       restricted: true,
       url: ensureRes.url || tab.url || '',
@@ -315,28 +378,24 @@ async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
       throw new Error(snapRes?.error || 'ページ状態の取得に失敗しました。');
     }
     snapshot = snapRes.snapshot;
-  }
 
-  let image = null;
-  let previewDataUrl = null;
-
-  if (useVision && tab.active) {
-    const capRes = await chrome.runtime.sendMessage({
-      type: MSG_TYPES.CAPTURE_TAB,
-      windowId: tab.windowId
-    });
-    if (capRes?.ok && capRes.dataUrl) {
-      try {
-        const annotated = await annotateScreenshot(capRes.dataUrl, snapshot, maxImageWidth);
-        image = annotated.blob;
-        previewDataUrl = annotated.previewDataUrl;
-      } catch {
-        // Fallback silently to DOM-only observation if annotation fails
+    if (useVision && tab.active) {
+      const capRes = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.CAPTURE_TAB,
+        windowId: tab.windowId
+      });
+      if (capRes?.ok && capRes.dataUrl) {
+        try {
+          const annotated = await annotateScreenshot(capRes.dataUrl, snapshot, maxImageWidth);
+          image = annotated.blob;
+          previewDataUrl = annotated.previewDataUrl;
+        } catch {
+          // Fallback silently to DOM-only observation if annotation fails
+        }
       }
     }
   }
 
-  const pdfContext = getLoadedPdfContext();
   return {
     tab,
     snapshot,
@@ -566,16 +625,41 @@ async function handleLocalPdfFile(file) {
   showPdfStatus(`「${file.name}」(${parsed.pageCount}ページ) をローカル読み込みしました。`, 'completed');
 }
 
+function isViewerTabUrl(url = '') {
+  try {
+    return Boolean(url && url.startsWith(chrome.runtime.getURL('viewer/viewer.html')));
+  } catch {
+    return false;
+  }
+}
+
 async function executeTabAction(action) {
   const { tab } = await getTargetTab();
+  const useViewer = Boolean(els.useBuiltInViewerCheckbox?.checked);
 
   switch (action.action) {
-    case 'navigate':
+    case 'navigate': {
+      if (useViewer && isSupportedViewerUrl(action.url)) {
+        const opened = await chrome.runtime.sendMessage({
+          type: MSG_TYPES.OPEN_MEDIA_IN_VIEWER,
+          url: action.url,
+          fetchViaDebugger: true,
+          inWorkspace: fgWorkspaceActive
+        });
+        if (opened?.ok) {
+          if (fgWorkspaceActive) {
+            const wsRes = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_WORKSPACE_STATE });
+            if (wsRes?.ok) renderWorkspaceBar(wsRes.workspace);
+          }
+          return { ok: true, detail: opened.detail, promptNote: opened.promptNote };
+        }
+      }
       return chrome.runtime.sendMessage({
         type: MSG_TYPES.NAVIGATE_TAB,
         tabId: tab.id,
         url: action.url
       });
+    }
     case 'go_back':
       return chrome.runtime.sendMessage({
         type: MSG_TYPES.HISTORY_BACK,
@@ -590,6 +674,21 @@ async function executeTabAction(action) {
       await new Promise((r) => setTimeout(r, action.ms || 1000));
       return { ok: true, detail: `${action.ms || 1000}ms 待機しました。` };
     case 'open_tab': {
+      if (useViewer && isSupportedViewerUrl(action.url)) {
+        const opened = await chrome.runtime.sendMessage({
+          type: MSG_TYPES.OPEN_MEDIA_IN_VIEWER,
+          url: action.url,
+          fetchViaDebugger: true,
+          inWorkspace: fgWorkspaceActive
+        });
+        if (opened?.ok) {
+          if (fgWorkspaceActive) {
+            const wsRes = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_WORKSPACE_STATE });
+            if (wsRes?.ok) renderWorkspaceBar(wsRes.workspace);
+          }
+          return { ok: true, detail: opened.detail, promptNote: opened.promptNote };
+        }
+      }
       const res = await chrome.runtime.sendMessage({
         type: MSG_TYPES.OPEN_WORKSPACE_TAB,
         url: action.url
@@ -634,6 +733,13 @@ async function executeTabAction(action) {
       };
     }
     case 'read_pdf': {
+      if (isViewerTabUrl(tab.url)) {
+        return chrome.runtime.sendMessage({
+          type: MSG_TYPES.VIEWER_EXECUTE_ACTION,
+          targetTabId: tab.id,
+          action
+        });
+      }
       if (!loadedPdf) {
         return {
           ok: false,
@@ -654,9 +760,16 @@ async function executeTabAction(action) {
       };
     }
     default:
+      if (isViewerTabUrl(tab.url)) {
+        return chrome.runtime.sendMessage({
+          type: MSG_TYPES.VIEWER_EXECUTE_ACTION,
+          targetTabId: tab.id,
+          action
+        });
+      }
       return chrome.tabs.sendMessage(tab.id, {
         type: MSG_TYPES.EXECUTE_DOM_ACTION,
-        action
+        action: action.action === 'click' ? { ...action, useBuiltInViewer: useViewer } : action
       });
   }
 }
@@ -885,6 +998,7 @@ function setRunningUi(isRunning) {
   els.useVisionCheckbox.disabled = isRunning;
   els.allowBackgroundCheckbox.disabled = isRunning;
   els.allowMultiTabCheckbox.disabled = isRunning;
+  els.useBuiltInViewerCheckbox.disabled = isRunning;
 }
 
 async function startRun() {
@@ -975,9 +1089,11 @@ async function startRun() {
     onEvent: handleAgentEvent
   });
 
+  await syncViewerInterceptConfig({ fgRunActive: true });
   try {
     await activeController.run({ goal, settings });
   } finally {
+    await syncViewerInterceptConfig({ fgRunActive: false });
     activeController = null;
     fgWorkspaceActive = false;
     setRunningUi(false);
@@ -1032,6 +1148,10 @@ els.maxStepsInput.addEventListener('change', saveSettings);
 els.useVisionCheckbox.addEventListener('change', saveSettings);
 els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
 els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
+els.useBuiltInViewerCheckbox.addEventListener('change', saveSettings);
+els.openMediaViewerBtn.addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('viewer/viewer.html') });
+});
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== MSG_TYPES.AGENT_EVENT) {
@@ -1646,6 +1766,7 @@ renderSetupFlags();
 renderLoadedPlaybookUi();
 renderLoadedPdfUi();
 await loadSettings();
+await syncViewerInterceptConfig();
 await loadFlowPresets();
 await refreshAvailability();
 await restoreBackgroundRunState();

@@ -92,6 +92,10 @@
             <input type="checkbox" id="allowMultiTabCheckbox" checked />
             <span>複数タブ作業を許可（自動でタブグループ「Nano AI」を作成）</span>
           </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="useBuiltInViewerCheckbox" checked />
+            <span>画像・動画・PDF・AIファイルを簡易ビュワー（別タブ）で開く</span>
+          </label>
         </div>
 
         <div class="run-actions">
@@ -195,6 +199,7 @@
           <div class="pdf-primary-actions">
             <button id="capturePagePdfBtn" class="btn btn-primary btn-xs" type="button">現在の画面をPDF保存＆読込</button>
             <button id="openPdfFileBtn" class="btn btn-secondary btn-xs" type="button">PDFを開く</button>
+            <button id="openMediaViewerBtn" class="btn btn-secondary btn-xs" type="button">簡易ビュワー</button>
             <input id="pdfFileInput" type="file" accept="application/pdf,.pdf" class="hidden" />
           </div>
 

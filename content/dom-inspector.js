@@ -7,8 +7,105 @@
   const MSG = {
     PING: 'NANO_CU_PING',
     CAPTURE_SNAPSHOT: 'NANO_CU_CAPTURE_SNAPSHOT',
-    EXECUTE_DOM_ACTION: 'NANO_CU_EXECUTE_DOM_ACTION'
+    EXECUTE_DOM_ACTION: 'NANO_CU_EXECUTE_DOM_ACTION',
+    OPEN_MEDIA_IN_VIEWER: 'NANO_CU_OPEN_MEDIA_IN_VIEWER'
   };
+
+  const SUPPORTED_MEDIA_EXT_RE = /\.(?:jpg|jpeg|jpe|jfif|pjpeg|pjp|png|bmp|dib|ai|webp|gif|mp4|m4v|mov|qt|pdf)$/i;
+  const MAX_CONTENT_FETCH_BYTES = 18 * 1024 * 1024;
+
+  function uint8ToBase64(bytes) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function resolveSupportedMediaLink(el) {
+    const anchor = el?.closest?.('a[href]');
+    if (!anchor) return null;
+    const rawHref = anchor.getAttribute('href');
+    if (!rawHref || rawHref.startsWith('#')) return null;
+
+    let resolvedUrl = '';
+    try {
+      resolvedUrl = new URL(rawHref, location.href).href;
+    } catch {
+      return null;
+    }
+    if (!/^(https?|blob):/i.test(resolvedUrl)) return null;
+
+    const downloadAttr = cleanText(anchor.getAttribute('download') || '');
+    if (downloadAttr && SUPPORTED_MEDIA_EXT_RE.test(downloadAttr)) {
+      return { url: resolvedUrl, filename: downloadAttr };
+    }
+
+    try {
+      const parsed = new URL(resolvedUrl.startsWith('blob:') ? resolvedUrl.slice(5) : resolvedUrl);
+      const pathname = decodeURIComponent(parsed.pathname || '');
+      const base = pathname.split('/').pop() || '';
+      if (SUPPORTED_MEDIA_EXT_RE.test(base)) {
+        return { url: resolvedUrl, filename: base };
+      }
+      for (const param of ['filename', 'file', 'name', 'download']) {
+        const val = parsed.searchParams.get(param);
+        if (val && SUPPORTED_MEDIA_EXT_RE.test(val)) {
+          return { url: resolvedUrl, filename: val.split(/[\\/]/).pop() || val };
+        }
+      }
+    } catch {
+      // Ignore URL parse error
+    }
+    return null;
+  }
+
+  async function tryOpenMediaLinkInViewer(mediaLink) {
+    try {
+      const resp = await fetch(mediaLink.url, { credentials: 'include' });
+      if (resp.ok) {
+        const contentType = (resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+          return { intercepted: false, isHtml: true };
+        }
+        const buf = await resp.arrayBuffer();
+        if (buf.byteLength > 0 && buf.byteLength <= MAX_CONTENT_FETCH_BYTES) {
+          const bytesBase64 = uint8ToBase64(new Uint8Array(buf));
+          const swRes = await chrome.runtime.sendMessage({
+            type: MSG.OPEN_MEDIA_IN_VIEWER,
+            url: mediaLink.url,
+            filename: mediaLink.filename,
+            mimeType: contentType,
+            bytesBase64,
+            inWorkspace: true
+          });
+          if (swRes?.ok) {
+            return { intercepted: true, detail: swRes.detail, promptNote: swRes.promptNote };
+          }
+          if (swRes?.isHtml) {
+            return { intercepted: false, isHtml: true };
+          }
+        }
+      }
+    } catch {
+      // Likely CORS restriction; fall back to CDP Fetch in Service Worker for http(s)
+    }
+
+    if (/^https?:/i.test(mediaLink.url)) {
+      const swRes = await chrome.runtime.sendMessage({
+        type: MSG.OPEN_MEDIA_IN_VIEWER,
+        url: mediaLink.url,
+        filename: mediaLink.filename,
+        fetchViaDebugger: true,
+        inWorkspace: true
+      });
+      if (swRes?.ok) {
+        return { intercepted: true, detail: swRes.detail, promptNote: swRes.promptNote };
+      }
+    }
+    return { intercepted: false };
+  }
 
   const INTERACTIVE_SELECTOR = [
     'a[href]',
@@ -403,6 +500,20 @@
           return { ok: false, error: `要素 #${action.elementId} が見つからないか DOM から削除されています。` };
         }
         el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+        if (action.useBuiltInViewer !== false) {
+          const mediaLink = resolveSupportedMediaLink(el);
+          if (mediaLink) {
+            showActionOverlay(el, `Nano: Viewer #${action.elementId}`);
+            const opened = await tryOpenMediaLinkInViewer(mediaLink);
+            if (opened.intercepted) {
+              return {
+                ok: true,
+                detail: opened.detail || `要素 #${action.elementId} を簡易ビュワーで開きました。`,
+                promptNote: opened.promptNote
+              };
+            }
+          }
+        }
         showActionOverlay(el, `Nano: Click #${action.elementId}`);
         el.focus?.({ preventScroll: true });
         dispatchMouseSequence(el);

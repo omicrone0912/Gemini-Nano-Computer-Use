@@ -8,6 +8,7 @@ test('manifest.json enforces strict local-only CSP and required PDF permissions'
   assert.equal(typeof csp, 'string');
   assert.match(csp, /connect-src 'none'/);
   assert.match(csp, /img-src 'self' data: blob:/);
+  assert.match(csp, /media-src 'self' blob: data:/);
   assert.match(csp, /frame-src 'self' blob:/);
   assert.match(csp, /object-src 'none'/);
   assert.ok(manifest.permissions.includes('debugger'));
@@ -34,4 +35,13 @@ test('sidepanel.html and offscreen.html contain no inline styles or inline scrip
   const studioJs = readFileSync('studio/studio.js', 'utf8');
   assert.doesNotMatch(studioJs, /\.cssText\b/);
   assert.doesNotMatch(studioJs, /setAttribute\(\s*['"]style['"]/i);
+
+  const viewerHtml = readFileSync('viewer/viewer.html', 'utf8');
+  assert.doesNotMatch(viewerHtml, /\sstyle\s*=/i);
+  assert.doesNotMatch(viewerHtml, /<style[\s>]/i);
+  assert.doesNotMatch(viewerHtml, /<script(?![^>]*\bsrc=)[^>]*>/i);
+
+  const viewerJs = readFileSync('viewer/viewer.js', 'utf8');
+  assert.doesNotMatch(viewerJs, /\.cssText\b/);
+  assert.doesNotMatch(viewerJs, /setAttribute\(\s*['"]style['"]/i);
 });

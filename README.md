@@ -22,6 +22,10 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
   - **画面の PDF ダウンロード＆自動読み込み**: 現在開いているタブを Chrome DevTools Protocol (`Page.printToPDF`) で PDF 化してローカル保存し、即座に拡張機能内へ読み込めます（手動ボタン・AI アクション `download_page_pdf` の両方に対応）。
   - **ローカル PDF の読み込み**: ファイル選択やドラッグ＆ドロップで手元の PDF を拡張機能へ直接読み込めます（外部アップロードなし）。
   - **PDF 閲覧 & テキスト抽出**: サイドパネル内の Chrome ネイティブ PDF プレビュー（`blob:` URL 表示・新しいタブで閲覧対応）と、純粋 JS ローカル PDF パーサー（`/FlateDecode`・`/ToUnicode` CMap 対応）によるページ別テキスト抽出・コピー、AI アクション `read_pdf` による要約が可能です。
+- **内蔵メディア＆文書簡易ビュワー（別タブ表示 & AI 閲覧対応）**
+  - **ローカルダウンロード回避の自動インターセプト**: 操作中に対象リンクをクリックしたり直接ダウンロードが始まった際、ローカルディスクへの保存で AI が参照不能になるのを防ぎ、拡張機能内の簡易ビュワー（別タブ `viewer/viewer.html`）へバイナリを読み込んで表示します。
+  - **対応形式**: 画像（JPEG系 `.jpg`/`.jpeg`/`.jfif`、`.png`、`.bmp`、`.webp`、`.gif`）、Adobe Illustrator（`.ai`：PDF互換ストリーム表示＋旧 PostScript テキスト抽出）、動画（`.mp4` [H.264 / H.265]、`.mov`）、文書（`.pdf`）。
+  - **AI による視覚＋テキスト参照**: 簡易ビュワータブ上で画像・動画の現在フレーム・PDF/AI 抽出テキストを Gemini Nano がそのまま観察し、ページ送り・動画シーク・拡大回転・ローカル保存ボタン等を操作できます。
 - **バックグラウンド実行 & 複数タブ作業（タブグループ自動作成）**
   - **バックグラウンド実行**: Offscreen Document (`offscreen/offscreen.html`) と Service Worker を連携させ、サイドパネルを閉じたり別タブを閲覧している間もタスクを継続実行できます（ツールバーアイコンに進捗バッジを表示し、サイドパネルを再開すると状態・履歴を再同期）。
   - **複数タブ作業と自動タブグループ化**: 複数タブでの作業を許可すると、Chrome のタブグループ（既定: `Nano AI`）を自動作成し、新規タブ (`open_tab`)・タブ切替 (`switch_tab`)・タブ終了 (`close_tab`)・リンクから開いた子タブをすべて同じタブグループ内で完結して管理します。
@@ -70,6 +74,10 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   ├── studio.html               # Google Workspace Studio 風ビジュアルフローエディタ
 │   ├── studio.css                # Studio スタイル（ドットグリッド＆分岐カード）
 │   └── studio.js                 # フロー編集・分岐管理・ローカルプリセット保存
+├── viewer/
+│   ├── viewer.html               # 画像・動画・PDF・Illustrator (.ai) 簡易ビュワー
+│   ├── viewer.css                # ビュワースタイル（ライト/ダークモード対応）
+│   └── viewer.js                 # メディア再生・PDF/AI 解析・AI観察ブリッジ
 ├── shared/
 │   ├── constants.js              # アクション定義・デフォルト設定・Chrome フラグ情報
 │   ├── action-schema.js          # JSON Schema 定義 & アクションパーサー

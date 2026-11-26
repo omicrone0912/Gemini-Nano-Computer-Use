@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gemini Nano 簡易ビュワー</title>
+  <link rel="stylesheet" href="viewer.css" />
+</head>
+<body>
+  <div class="viewer-shell">
+    <header class="viewer-header">
+      <div class="viewer-title-group">
+        <span id="mediaTypeBadge" class="media-badge">待機中</span>
+        <div class="viewer-file-info">
+          <h1 id="mediaFilename" class="viewer-filename">ファイルが選択されていません</h1>
+          <div id="mediaMetaStats" class="viewer-meta">
+            対応形式: JPEG / PNG / BMP / AI / WebP / GIF / MP4 (H.264, H.265) / MOV / PDF
+          </div>
+        </div>
+      </div>
+
+      <div class="viewer-actions">
+        <button id="openLocalFileBtn" class="btn btn-secondary" type="button">ローカルファイルを開く</button>
+        <input
+          id="localFileInput"
+          type="file"
+          class="hidden"
+          accept=".jpg,.jpeg,.jpe,.jfif,.pjpeg,.pjp,.png,.bmp,.dib,.ai,.webp,.gif,.mp4,.m4v,.mov,.qt,.pdf,image/*,video/*,application/pdf,application/postscript"
+        />
+        <button id="saveLocalBtn" class="btn btn-primary" type="button" disabled>ローカルに保存</button>
+      </div>
+    </header>
+
+    <div id="viewerStatusBanner" class="viewer-banner hidden"></div>
+
+    <main id="viewerMain" class="viewer-main">
+      <section id="viewerDropZone" class="viewer-dropzone" tabindex="0">
+        <div class="dropzone-title">ここにファイルをドラッグ＆ドロップ、または「ローカルファイルを開く」</div>
+        <div class="dropzone-sub">
+          AI操作中に踏んだ画像・動画・PDF・Illustrator (.ai) リンクも自動でこの簡易ビュワーに開かれます。
+        </div>
+      </section>
+
+      <section id="imageStage" class="media-stage hidden">
+        <div class="stage-toolbar">
+          <button id="imgZoomOutBtn" class="btn btn-secondary btn-xs" type="button">縮小</button>
+          <button id="imgZoomResetBtn" class="btn btn-secondary btn-xs" type="button">100%</button>
+          <button id="imgZoomInBtn" class="btn btn-secondary btn-xs" type="button">拡大</button>
+          <button id="imgRotateBtn" class="btn btn-secondary btn-xs" type="button">90°回転</button>
+          <span id="imgZoomLabel" class="toolbar-info">100%</span>
+        </div>
+        <div class="image-viewport">
+          <img id="imagePreview" class="image-preview" alt="画像プレビュー" />
+        </div>
+      </section>
+
+      <section id="videoStage" class="media-stage hidden">
+        <div class="stage-toolbar">
+          <button id="videoPlayPauseBtn" class="btn btn-secondary btn-xs" type="button">再生 / 一時停止</button>
+          <button id="videoBack5Btn" class="btn btn-secondary btn-xs" type="button">5秒戻る</button>
+          <button id="videoFwd5Btn" class="btn btn-secondary btn-xs" type="button">5秒進む</button>
+          <button id="videoStartBtn" class="btn btn-secondary btn-xs" type="button">先頭へ</button>
+          <button id="video25Btn" class="btn btn-secondary btn-xs" type="button">25%</button>
+          <button id="video50Btn" class="btn btn-secondary btn-xs" type="button">50%</button>
+          <button id="video75Btn" class="btn btn-secondary btn-xs" type="button">75%</button>
+          <span id="videoStatusText" class="toolbar-info">読込中...</span>
+        </div>
+        <div id="videoErrorBanner" class="viewer-banner error hidden"></div>
+        <div class="video-viewport">
+          <video id="videoPlayer" class="video-player" controls playsinline></video>
+        </div>
+      </section>
+
+      <section id="docStage" class="media-stage hidden">
+        <div class="stage-toolbar">
+          <button id="docViewPreviewBtn" class="btn btn-primary btn-xs" type="button">プレビュー</button>
+          <button id="docViewTextBtn" class="btn btn-secondary btn-xs" type="button">抽出テキスト</button>
+          <span class="toolbar-sep">|</span>
+          <button id="docPrevPageBtn" class="btn btn-secondary btn-xs" type="button">前のページ</button>
+          <span id="docPageIndicator" class="toolbar-info">0 / 0</span>
+          <button id="docNextPageBtn" class="btn btn-secondary btn-xs" type="button">次のページ</button>
+        </div>
+        <div id="docPreviewPane" class="doc-pane">
+          <iframe id="docPreviewFrame" class="doc-preview-frame" title="文書プレビュー"></iframe>
+        </div>
+        <div id="docTextPane" class="doc-pane hidden">
+          <pre id="docExtractedText" class="doc-extracted-text"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="viewer.js"></script>
+</body>
+</html>

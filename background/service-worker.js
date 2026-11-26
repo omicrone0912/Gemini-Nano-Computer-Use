@@ -1,6 +1,11 @@
 import { AgentController } from '../shared/agent-controller.js';
 import { DEFAULT_SETTINGS, MSG_TYPES } from '../shared/constants.js';
 import {
+  classifyViewerMedia,
+  detectMagicMimeType,
+  isSupportedViewerUrl
+} from '../shared/media-viewer.js';
+import {
   base64ToUint8Array,
   extractPdfPageSnippet,
   parsePdfBytes,
@@ -8,12 +13,17 @@ import {
 } from '../shared/pdf-parser.js';
 import { SYSTEM_PROMPT } from '../shared/prompt-builder.js';
 import { TabWorkspaceManager } from '../shared/tab-workspace.js';
+import { saveViewerMedia } from '../shared/viewer-storage.js';
 import { compileWorkflowToPlaybook, validateWorkflowPreset } from '../shared/workflow-flow.js';
 
 const workspace = new TabWorkspaceManager(chrome);
 let creatingOffscreen = null;
 let bgController = null;
 let pendingConfirmResolver = null;
+let viewerInterceptConfig = {
+  enabled: true,
+  fgRunActive: false
+};
 
 const bgState = {
   running: false,
@@ -26,8 +36,18 @@ const bgState = {
   loadedPlaybook: null
 };
 
+function isViewerUrl(url = '') {
+  if (!url) return false;
+  try {
+    return url.startsWith(chrome.runtime.getURL('viewer/viewer.html'));
+  } catch {
+    return false;
+  }
+}
+
 function isRestrictedUrl(url = '') {
   if (!url) return true;
+  if (isViewerUrl(url)) return false;
   const lower = url.toLowerCase();
   return (
     lower.startsWith('chrome://') ||
@@ -96,6 +116,15 @@ function waitForTabComplete(tabId, timeoutMs = 12000) {
 
 async function ensureContentScript(tabId) {
   const tab = await chrome.tabs.get(tabId);
+  if (isViewerUrl(tab?.url)) {
+    return {
+      ok: true,
+      restricted: false,
+      isViewer: true,
+      url: tab?.url || '',
+      title: tab?.title || 'Gemini Nano 簡易ビュワー'
+    };
+  }
   if (isRestrictedUrl(tab?.url)) {
     return {
       ok: true,
@@ -252,6 +281,225 @@ async function getRecentPdfDownloads() {
   return { ok: true, items: pdfs };
 }
 
+function parseContentDispositionFilename(headerVal = '') {
+  if (!headerVal) return '';
+  const utfMatch = headerVal.match(/filename\*\s*=\s*(?:utf-8'')?([^;\s]+)/i);
+  if (utfMatch?.[1]) {
+    try {
+      return decodeURIComponent(utfMatch[1].replace(/^["']|["']$/g, ''));
+    } catch {
+      return utfMatch[1].replace(/^["']|["']$/g, '');
+    }
+  }
+  const plainMatch = headerVal.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;\s]+)/i);
+  return (plainMatch?.[1] || plainMatch?.[2] || '').trim();
+}
+
+function inferFilenameFromUrl(url = '', fallbackExt = 'bin') {
+  try {
+    const parsed = new URL(url);
+    for (const p of ['filename', 'file', 'name', 'download']) {
+      const val = parsed.searchParams.get(p);
+      if (val) return val.split(/[\\/]/).pop();
+    }
+    const base = decodeURIComponent(parsed.pathname || '').split('/').pop();
+    if (base) return base;
+  } catch {
+    // Ignore
+  }
+  return `media.${fallbackExt || 'bin'}`;
+}
+
+async function fetchBinaryViaDebugger(url) {
+  if (!/^https?:/i.test(url)) {
+    return { ok: false, error: 'HTTP/HTTPS URL のみ CDP 取得できます。' };
+  }
+
+  let tempTab = null;
+  let attached = false;
+  let onEvent = null;
+
+  try {
+    tempTab = await chrome.tabs.create({ url: 'about:blank', active: false });
+    const target = { tabId: tempTab.id };
+    await chrome.debugger.attach(target, '1.3');
+    attached = true;
+
+    const result = await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (val, isErr = false) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        if (isErr) reject(val);
+        else resolve(val);
+      };
+
+      const timeoutId = setTimeout(() => {
+        finish(new Error('メディアデータの取得がタイムアウトしました。'), true);
+      }, 25000);
+
+      onEvent = async (source, method, params) => {
+        if (source.tabId !== tempTab.id || method !== 'Fetch.requestPaused' || settled) {
+          return;
+        }
+        const { requestId, responseStatusCode, responseHeaders = [], request } = params;
+        if (responseStatusCode >= 300 && responseStatusCode < 400) {
+          chrome.debugger.sendCommand(target, 'Fetch.continueResponse', { requestId }).catch(() => {});
+          return;
+        }
+
+        const headerMap = new Map();
+        for (const h of responseHeaders) {
+          headerMap.set(String(h.name || '').toLowerCase(), String(h.value || ''));
+        }
+        const contentType = (headerMap.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const dispFilename = parseContentDispositionFilename(headerMap.get('content-disposition') || '');
+
+        if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+          chrome.debugger.sendCommand(target, 'Fetch.failRequest', { requestId, errorReason: 'Aborted' }).catch(() => {});
+          finish({ ok: false, isHtml: true, contentType });
+          return;
+        }
+
+        try {
+          const bodyRes = await chrome.debugger.sendCommand(target, 'Fetch.getResponseBody', { requestId });
+          await chrome.debugger
+            .sendCommand(target, 'Fetch.failRequest', { requestId, errorReason: 'Aborted' })
+            .catch(() => {});
+
+          const bytes = bodyRes.base64Encoded
+            ? base64ToUint8Array(bodyRes.body || '')
+            : new TextEncoder().encode(bodyRes.body || '');
+
+          finish({
+            ok: true,
+            bytes,
+            mimeType: contentType,
+            filename: dispFilename,
+            finalUrl: request?.url || url
+          });
+        } catch (err) {
+          finish(err, true);
+        }
+      };
+
+      chrome.debugger.onEvent.addListener(onEvent);
+      chrome.debugger
+        .sendCommand(target, 'Fetch.enable', {
+          patterns: [{ urlPattern: '*', requestStage: 'Response' }]
+        })
+        .then(() => chrome.tabs.update(tempTab.id, { url }))
+        .catch((err) => finish(err, true));
+    });
+
+    return result;
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  } finally {
+    if (onEvent) {
+      chrome.debugger.onEvent.removeListener(onEvent);
+    }
+    if (attached && tempTab?.id) {
+      await chrome.debugger.detach({ tabId: tempTab.id }).catch(() => {});
+    }
+    if (tempTab?.id) {
+      await chrome.tabs.remove(tempTab.id).catch(() => {});
+    }
+  }
+}
+
+async function openMediaInViewerTab({
+  url = '',
+  filename = '',
+  mimeType = '',
+  bytes = null,
+  bytesBase64 = '',
+  fetchViaDebugger = false,
+  inWorkspace = false
+} = {}) {
+  let rawBytes = bytes instanceof Uint8Array ? bytes : null;
+  let resolvedMime = mimeType;
+  let resolvedFilename = filename;
+  let finalUrl = url;
+
+  if (!rawBytes && bytesBase64) {
+    rawBytes = base64ToUint8Array(bytesBase64);
+  } else if (!rawBytes && fetchViaDebugger && /^https?:/i.test(url)) {
+    const fetched = await fetchBinaryViaDebugger(url);
+    if (!fetched?.ok) {
+      return fetched || { ok: false, error: 'ファイルの取得に失敗しました。' };
+    }
+    rawBytes = fetched.bytes;
+    resolvedMime = fetched.mimeType || resolvedMime;
+    resolvedFilename = fetched.filename || resolvedFilename;
+    finalUrl = fetched.finalUrl || finalUrl;
+  }
+
+  if (!rawBytes || rawBytes.byteLength === 0) {
+    return { ok: false, error: 'メディアデータが空のため簡易ビュワーで開けませんでした。' };
+  }
+
+  const magicMime = detectMagicMimeType(rawBytes);
+  const spec = classifyViewerMedia({
+    url: finalUrl,
+    filename: resolvedFilename,
+    mimeType: magicMime || resolvedMime
+  });
+
+  if (!resolvedFilename) {
+    resolvedFilename = inferFilenameFromUrl(finalUrl, spec.ext || 'bin');
+  }
+  if (spec.ext && !resolvedFilename.includes('.')) {
+    resolvedFilename = `${resolvedFilename}.${spec.ext}`;
+  }
+
+  const saved = await saveViewerMedia({
+    filename: resolvedFilename,
+    sourceUrl: finalUrl,
+    mimeType: spec.supported ? spec.mimeType : magicMime || resolvedMime || 'application/octet-stream',
+    category: spec.supported ? spec.category : 'document',
+    ext: spec.ext,
+    bytes: rawBytes
+  });
+
+  const viewerUrl = chrome.runtime.getURL(`viewer/viewer.html?id=${encodeURIComponent(saved.id)}`);
+  let viewerTab = null;
+
+  if (inWorkspace && workspace.managedTabIds.length > 0) {
+    if (workspace.multiTabEnabled) {
+      const openRes = await workspace.openTab(viewerUrl);
+      viewerTab = openRes.tab;
+    } else {
+      viewerTab = await chrome.tabs.create({
+        windowId: workspace.windowId ?? undefined,
+        url: viewerUrl,
+        active: !workspace.backgroundMode
+      });
+      if (!workspace.managedTabIds.includes(viewerTab.id)) {
+        workspace.managedTabIds.push(viewerTab.id);
+      }
+      workspace.currentTabId = viewerTab.id;
+    }
+  } else {
+    viewerTab = await chrome.tabs.create({ url: viewerUrl, active: true });
+  }
+
+  await waitForTabComplete(viewerTab.id, 6000);
+  await new Promise((r) => setTimeout(r, 180));
+
+  const detail = `「${saved.filename}」(${spec.label || saved.ext}) を別タブの簡易ビュワーで開きました。`;
+  return {
+    ok: true,
+    tabId: viewerTab.id,
+    viewerUrl,
+    mediaId: saved.id,
+    filename: saved.filename,
+    detail,
+    promptNote: `${detail} このビュワータブ内の画像・動画フレーム・PDF/AI抽出テキストをそのまま参照および操作できます。`
+  };
+}
+
 async function ensureOffscreenDocument() {
   if (typeof chrome.runtime.getContexts === 'function') {
     const existing = await chrome.runtime.getContexts({
@@ -404,7 +652,45 @@ async function observeWorkspaceTab({ useVision, maxElements, maxImageWidth }) {
 
   const ensureRes = await ensureContentScript(tab.id);
   let snapshot;
-  if (ensureRes?.restricted) {
+  let image = null;
+  let previewDataUrl = null;
+  let pdfContext = getBgPdfContext();
+
+  if (ensureRes?.isViewer) {
+    const viewerSnap = await chrome.runtime
+      .sendMessage({
+        type: MSG_TYPES.VIEWER_CAPTURE_SNAPSHOT,
+        targetTabId: tab.id,
+        maxImageWidth
+      })
+      .catch(() => null);
+    snapshot = viewerSnap?.snapshot || {
+      restricted: false,
+      url: tab.url || '',
+      title: tab.title || 'Gemini Nano 簡易ビュワー',
+      elements: [],
+      textExcerpt: '簡易ビュワーを読み込み中です。'
+    };
+    if (viewerSnap?.viewerPdfContext) {
+      pdfContext = viewerSnap.viewerPdfContext;
+    }
+    if (viewerSnap?.viewerImageDataUrl) {
+      previewDataUrl = viewerSnap.viewerImageDataUrl;
+      if (useVision) {
+        image = {
+          rawScreenshotDataUrl: viewerSnap.viewerImageDataUrl,
+          snapshot: { elements: [] },
+          maxImageWidth
+        };
+      }
+    } else if (useVision && tab.active) {
+      const capRes = await captureTabImage(tab.windowId);
+      if (capRes?.ok && capRes.dataUrl) {
+        image = { rawScreenshotDataUrl: capRes.dataUrl, snapshot, maxImageWidth };
+        previewDataUrl = capRes.dataUrl;
+      }
+    }
+  } else if (ensureRes?.restricted) {
     snapshot = {
       restricted: true,
       url: ensureRes.url || tab.url || '',
@@ -420,16 +706,13 @@ async function observeWorkspaceTab({ useVision, maxElements, maxImageWidth }) {
       throw new Error(snapRes?.error || 'ページ状態の取得に失敗しました。');
     }
     snapshot = snapRes.snapshot;
-  }
-
-  let image = null;
-  let previewDataUrl = null;
-  // Capture visible tab ONLY when target tab is active so background tasks never capture the user's active tab
-  if (useVision && tab.active) {
-    const capRes = await captureTabImage(tab.windowId);
-    if (capRes?.ok && capRes.dataUrl) {
-      image = { rawScreenshotDataUrl: capRes.dataUrl, snapshot, maxImageWidth };
-      previewDataUrl = capRes.dataUrl;
+    // Capture visible tab ONLY when target tab is active so background tasks never capture the user's active tab
+    if (useVision && tab.active) {
+      const capRes = await captureTabImage(tab.windowId);
+      if (capRes?.ok && capRes.dataUrl) {
+        image = { rawScreenshotDataUrl: capRes.dataUrl, snapshot, maxImageWidth };
+        previewDataUrl = capRes.dataUrl;
+      }
     }
   }
 
@@ -439,7 +722,7 @@ async function observeWorkspaceTab({ useVision, maxElements, maxImageWidth }) {
     snapshot,
     image,
     previewDataUrl,
-    pdfContext: getBgPdfContext(),
+    pdfContext,
     workspaceContext,
     playbookContext: bgState.loadedPlaybook
   };
@@ -451,9 +734,27 @@ async function executeWorkspaceAction(action) {
     return { ok: false, error: '操作対象のタブが見つかりません。' };
   }
 
+  const useViewer = viewerInterceptConfig.enabled && bgState.settings.useBuiltInViewer !== false;
+
   switch (action.action) {
-    case 'navigate':
+    case 'navigate': {
+      if (useViewer && isSupportedViewerUrl(action.url)) {
+        const opened = await openMediaInViewerTab({
+          url: action.url,
+          fetchViaDebugger: true,
+          inWorkspace: true
+        });
+        if (opened?.ok) {
+          return {
+            ok: true,
+            detail: opened.detail,
+            promptNote: opened.promptNote,
+            workspace: await workspace.getWorkspaceContext()
+          };
+        }
+      }
       return navigateTab(tab.id, action.url);
+    }
     case 'go_back':
       return historyStep(tab.id, 'back');
     case 'go_forward':
@@ -462,6 +763,21 @@ async function executeWorkspaceAction(action) {
       await new Promise((r) => setTimeout(r, action.ms || 1000));
       return { ok: true, detail: `${action.ms || 1000}ms 待機しました。` };
     case 'open_tab': {
+      if (useViewer && isSupportedViewerUrl(action.url)) {
+        const opened = await openMediaInViewerTab({
+          url: action.url,
+          fetchViaDebugger: true,
+          inWorkspace: true
+        });
+        if (opened?.ok) {
+          return {
+            ok: true,
+            detail: opened.detail,
+            promptNote: opened.promptNote,
+            workspace: await workspace.getWorkspaceContext()
+          };
+        }
+      }
       const res = await workspace.openTab(action.url);
       await waitForTabComplete(res.tab.id, 10000);
       const updatedWs = await workspace.getWorkspaceContext();
@@ -516,6 +832,13 @@ async function executeWorkspaceAction(action) {
       };
     }
     case 'read_pdf': {
+      if (isViewerUrl(tab.url)) {
+        return chrome.runtime.sendMessage({
+          type: MSG_TYPES.VIEWER_EXECUTE_ACTION,
+          targetTabId: tab.id,
+          action
+        });
+      }
       if (!bgState.loadedPdf?.parsed) {
         return {
           ok: false,
@@ -535,9 +858,16 @@ async function executeWorkspaceAction(action) {
       };
     }
     default:
+      if (isViewerUrl(tab.url)) {
+        return chrome.runtime.sendMessage({
+          type: MSG_TYPES.VIEWER_EXECUTE_ACTION,
+          targetTabId: tab.id,
+          action
+        });
+      }
       return chrome.tabs.sendMessage(tab.id, {
         type: MSG_TYPES.EXECUTE_DOM_ACTION,
-        action
+        action: action.action === 'click' ? { ...action, useBuiltInViewer: useViewer } : action
       });
   }
 }
@@ -863,12 +1193,94 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse(res);
           break;
         }
+        case MSG_TYPES.OPEN_MEDIA_IN_VIEWER: {
+          const res = await openMediaInViewerTab({
+            url: message.url || '',
+            filename: message.filename || '',
+            mimeType: message.mimeType || '',
+            bytesBase64: message.bytesBase64 || '',
+            fetchViaDebugger: Boolean(message.fetchViaDebugger),
+            inWorkspace: Boolean(message.inWorkspace)
+          });
+          sendResponse(res);
+          break;
+        }
+        case MSG_TYPES.SET_VIEWER_INTERCEPT_CONFIG: {
+          if (typeof message.enabled === 'boolean') {
+            viewerInterceptConfig.enabled = message.enabled;
+          }
+          if (typeof message.fgRunActive === 'boolean') {
+            viewerInterceptConfig.fgRunActive = message.fgRunActive;
+          }
+          sendResponse({ ok: true, config: viewerInterceptConfig });
+          break;
+        }
         default:
           sendResponse({ ok: false, error: `Unknown message type: ${message.type}` });
           break;
       }
     } catch (error) {
       sendResponse({ ok: false, error: error?.message || String(error) });
+    }
+  })();
+
+  return true;
+});
+
+// Intercept direct downloads of supported viewer media while extension or agent is active
+chrome.downloads?.onDeterminingFilename?.addListener((item, suggest) => {
+  // Never intercept downloads initiated by this extension itself (e.g. Save Locally / Print PDF / Templates)
+  if (!item || item.byExtensionId === chrome.runtime.id) {
+    suggest();
+    return false;
+  }
+
+  const targetUrl = item.finalUrl || item.url || '';
+  if (!viewerInterceptConfig.enabled || !/^https?:/i.test(targetUrl)) {
+    suggest();
+    return false;
+  }
+
+  const spec = classifyViewerMedia({
+    url: targetUrl,
+    filename: item.filename || '',
+    mimeType: item.mime || ''
+  });
+  if (!spec.supported) {
+    suggest();
+    return false;
+  }
+
+  (async () => {
+    try {
+      let panelOpen = false;
+      if (!bgState.running && !viewerInterceptConfig.fgRunActive && typeof chrome.runtime.getContexts === 'function') {
+        const panels = await chrome.runtime.getContexts({ contextTypes: ['SIDE_PANEL'] }).catch(() => []);
+        panelOpen = panels.length > 0;
+      }
+
+      if (!bgState.running && !viewerInterceptConfig.fgRunActive && !panelOpen) {
+        suggest();
+        return;
+      }
+
+      await chrome.downloads.cancel(item.id).catch(() => {});
+      await chrome.downloads.erase({ id: item.id }).catch(() => {});
+      suggest();
+
+      await openMediaInViewerTab({
+        url: targetUrl,
+        filename: item.filename || '',
+        mimeType: item.mime || spec.mimeType,
+        fetchViaDebugger: true,
+        inWorkspace: bgState.running || viewerInterceptConfig.fgRunActive
+      });
+    } catch {
+      try {
+        suggest();
+      } catch {
+        // Ignore
+      }
     }
   })();
 

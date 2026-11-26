@@ -90,6 +90,14 @@
             <input type="checkbox" id="useVisionCheckbox" checked />
             <span>画面スクリーンショット認識 (Vision / Set-of-Mark) を有効化</span>
           </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="allowBackgroundCheckbox" checked />
+            <span>バックグラウンド実行を許可（パネルを閉じても／別タブ操作中も継続）</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="allowMultiTabCheckbox" checked />
+            <span>複数タブ作業を許可（自動でタブグループ「Nano AI」を作成）</span>
+          </label>
         </div>
 
         <div class="run-actions">
@@ -97,6 +105,14 @@
           <button id="stopBtn" class="btn btn-danger hidden">緊急停止</button>
           <button id="clearLogBtn" class="btn btn-ghost">履歴クリア</button>
         </div>
+      </section>
+
+      <section id="workspaceBar" class="workspace-bar hidden">
+        <div class="workspace-bar-header">
+          <span class="workspace-badge" id="workspaceGroupBadge">グループ: Nano AI</span>
+          <span class="workspace-mode-label" id="workspaceModeLabel"></span>
+        </div>
+        <div id="workspaceTabsList" class="workspace-tabs-list"></div>
       </section>
 
       <section id="confirmCard" class="confirm-card hidden">

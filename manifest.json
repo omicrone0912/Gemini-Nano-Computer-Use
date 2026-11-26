@@ -10,7 +10,9 @@
     "scripting",
     "storage",
     "debugger",
-    "downloads"
+    "downloads",
+    "tabGroups",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"

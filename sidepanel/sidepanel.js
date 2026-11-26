@@ -9,7 +9,8 @@ import { NanoClient } from '../shared/nano-client.js';
 import {
   base64ToUint8Array,
   extractPdfPageSnippet,
-  parsePdfBytes
+  parsePdfBytes,
+  uint8ArrayToBase64
 } from '../shared/pdf-parser.js';
 import { annotateScreenshot } from './annotator.js';
 
@@ -31,9 +32,15 @@ const els = {
   executionModeSelect: document.getElementById('executionModeSelect'),
   maxStepsInput: document.getElementById('maxStepsInput'),
   useVisionCheckbox: document.getElementById('useVisionCheckbox'),
+  allowBackgroundCheckbox: document.getElementById('allowBackgroundCheckbox'),
+  allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
   runBtn: document.getElementById('runBtn'),
   stopBtn: document.getElementById('stopBtn'),
   clearLogBtn: document.getElementById('clearLogBtn'),
+  workspaceBar: document.getElementById('workspaceBar'),
+  workspaceGroupBadge: document.getElementById('workspaceGroupBadge'),
+  workspaceModeLabel: document.getElementById('workspaceModeLabel'),
+  workspaceTabsList: document.getElementById('workspaceTabsList'),
   confirmCard: document.getElementById('confirmCard'),
   confirmBadge: document.getElementById('confirmBadge'),
   confirmTitle: document.getElementById('confirmTitle'),
@@ -90,6 +97,9 @@ const nanoClient = new NanoClient(globalThis);
 const stepCards = new Map();
 const sessionPdfCache = new Map();
 let activeController = null;
+let backgroundRunActive = false;
+let fgWorkspaceActive = false;
+let activeBgConfirmCleanup = null;
 let availabilityState = null;
 let loadedPdf = null;
 let pdfShowAllPages = false;
@@ -139,6 +149,8 @@ async function loadSettings() {
     els.executionModeSelect.value = saved.executionMode;
     els.maxStepsInput.value = String(saved.maxSteps);
     els.useVisionCheckbox.checked = Boolean(saved.useVision);
+    els.allowBackgroundCheckbox.checked = Boolean(saved.allowBackgroundExecution);
+    els.allowMultiTabCheckbox.checked = Boolean(saved.allowMultiTab);
   } catch {
     // Ignore storage error
   }
@@ -159,7 +171,9 @@ function collectSettings() {
     ...DEFAULT_SETTINGS,
     executionMode: els.executionModeSelect.value,
     maxSteps,
-    useVision: Boolean(els.useVisionCheckbox.checked)
+    useVision: Boolean(els.useVisionCheckbox.checked),
+    allowBackgroundExecution: Boolean(els.allowBackgroundCheckbox.checked),
+    allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked)
   };
 }
 
@@ -203,8 +217,56 @@ async function getActiveTab() {
   return tab;
 }
 
-async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
+async function getTargetTab() {
+  if (fgWorkspaceActive) {
+    const wsRes = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_WORKSPACE_STATE });
+    if (wsRes?.ok && wsRes.workspace?.currentTabId) {
+      const tab = await chrome.tabs.get(wsRes.workspace.currentTabId).catch(() => null);
+      if (tab?.id) {
+        return { tab, workspaceContext: wsRes.workspace };
+      }
+    }
+  }
   const tab = await getActiveTab();
+  return { tab, workspaceContext: null };
+}
+
+function renderWorkspaceBar(workspace) {
+  if (!workspace || !Array.isArray(workspace.tabs) || workspace.tabs.length === 0) {
+    els.workspaceBar.classList.add('hidden');
+    return;
+  }
+  if (!workspace.multiTabEnabled && !workspace.backgroundMode) {
+    els.workspaceBar.classList.add('hidden');
+    return;
+  }
+
+  els.workspaceBar.classList.remove('hidden');
+  els.workspaceGroupBadge.textContent =
+    workspace.groupId !== null && workspace.groupId !== undefined
+      ? `タブグループ: ${workspace.groupTitle || 'Nano AI'}`
+      : '単一タブ作業';
+  els.workspaceModeLabel.textContent = workspace.backgroundMode ? 'バックグラウンド実行' : 'フォアグラウンド実行';
+
+  els.workspaceTabsList.innerHTML = '';
+  for (const item of workspace.tabs) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = `workspace-tab-chip${item.isCurrent ? ' current' : ''}`;
+    chip.textContent = `#${item.index} ${item.title || item.url || 'タブ'}`;
+    chip.title = `${item.title || ''}\n${item.url || ''}`;
+    chip.addEventListener('click', () => {
+      chrome.runtime.sendMessage({
+        type: MSG_TYPES.FOCUS_WORKSPACE_TAB,
+        tabId: item.tabId
+      });
+    });
+    els.workspaceTabsList.appendChild(chip);
+  }
+}
+
+async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
+  const { tab, workspaceContext } = await getTargetTab();
   const ensureRes = await chrome.runtime.sendMessage({
     type: MSG_TYPES.ENSURE_CONTENT_SCRIPT,
     tabId: tab.id
@@ -232,7 +294,7 @@ async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
   let image = null;
   let previewDataUrl = null;
 
-  if (useVision) {
+  if (useVision && tab.active) {
     const capRes = await chrome.runtime.sendMessage({
       type: MSG_TYPES.CAPTURE_TAB,
       windowId: tab.windowId
@@ -249,7 +311,7 @@ async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
   }
 
   const pdfContext = getLoadedPdfContext();
-  return { tab, snapshot, image, previewDataUrl, pdfContext };
+  return { tab, snapshot, image, previewDataUrl, pdfContext, workspaceContext };
 }
 
 function formatByteSize(bytes) {
@@ -481,7 +543,7 @@ async function handleLocalPdfFile(file) {
 }
 
 async function executeTabAction(action) {
-  const tab = await getActiveTab();
+  const { tab } = await getTargetTab();
 
   switch (action.action) {
     case 'navigate':
@@ -503,6 +565,39 @@ async function executeTabAction(action) {
     case 'wait':
       await new Promise((r) => setTimeout(r, action.ms || 1000));
       return { ok: true, detail: `${action.ms || 1000}ms 待機しました。` };
+    case 'open_tab': {
+      const res = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.OPEN_WORKSPACE_TAB,
+        url: action.url
+      });
+      if (!res?.ok) {
+        return { ok: false, error: res?.error || '新しいタブを開けませんでした。' };
+      }
+      renderWorkspaceBar(res.workspace);
+      return { ok: true, detail: `タブグループに新しいタブ (${action.url}) を開きました。` };
+    }
+    case 'switch_tab': {
+      const res = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.SWITCH_WORKSPACE_TAB,
+        tabIndex: action.tabIndex
+      });
+      if (!res?.ok) {
+        return { ok: false, error: res?.error || 'タブを切り替えられませんでした。' };
+      }
+      renderWorkspaceBar(res.workspace);
+      return { ok: true, detail: `タブ #${action.tabIndex} へ切り替えました。` };
+    }
+    case 'close_tab': {
+      const res = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.CLOSE_WORKSPACE_TAB,
+        tabIndex: action.tabIndex
+      });
+      if (!res?.ok) {
+        return { ok: false, error: res?.error || 'タブを閉じられませんでした。' };
+      }
+      renderWorkspaceBar(res.workspace);
+      return { ok: true, detail: '作業タブを閉じました。' };
+    }
     case 'download_page_pdf': {
       const pdfRes = await captureAndLoadCurrentTabPdf(action.filename || '');
       const snippet = extractPdfPageSnippet(pdfRes.parsed, 1, 900);
@@ -675,6 +770,18 @@ function handleAgentEvent(event) {
       const msg = event.result?.detail || event.result?.error || (ok ? '成功' : '失敗');
       resultEl.textContent = msg;
       resultEl.classList.remove('hidden');
+
+      if (event.result?.workspace) {
+        renderWorkspaceBar(event.result.workspace);
+      }
+      if (event.result?.pdfUpdate?.pdfBase64) {
+        const bytes = base64ToUint8Array(event.result.pdfUpdate.pdfBase64);
+        loadPdfFromBytes(bytes, event.result.pdfUpdate.filename, event.result.pdfUpdate.downloadId ?? null).catch(() => {});
+      }
+      break;
+    }
+    case 'confirmation_requested': {
+      showBackgroundConfirmationCard(event.details);
       break;
     }
     case 'step_error': {
@@ -692,11 +799,57 @@ function handleAgentEvent(event) {
       els.resultBanner.textContent = event.message || '終了しました。';
       els.resultBanner.classList.remove('hidden');
       els.stepCounter.textContent = '完了';
+      if (backgroundRunActive) {
+        backgroundRunActive = false;
+        setRunningUi(false);
+        activeBgConfirmCleanup?.();
+      }
       break;
     }
     default:
       break;
   }
+}
+
+function showBackgroundConfirmationCard(details) {
+  if (!details) return;
+  activeBgConfirmCleanup?.();
+
+  els.confirmCard.classList.remove('hidden');
+  els.confirmBadge.textContent = details.kind === 'danger' ? '注意' : details.kind === 'ask_user' ? '質問' : '確認';
+  els.confirmTitle.textContent = details.title || '操作の確認';
+  els.confirmReason.textContent = details.reason || '';
+  els.confirmActionDetail.textContent = JSON.stringify(details.action, null, 2);
+
+  const allowReply = Boolean(details.allowCustomReply);
+  els.customReplyWrap.classList.toggle('hidden', !allowReply);
+  els.customReplyInput.value = '';
+  els.confirmSkipBtn.classList.toggle('hidden', allowReply);
+
+  const cleanup = () => {
+    els.confirmCard.classList.add('hidden');
+    els.confirmApproveBtn.removeEventListener('click', onApprove);
+    els.confirmSkipBtn.removeEventListener('click', onSkip);
+    els.confirmStopBtn.removeEventListener('click', onStop);
+    activeBgConfirmCleanup = null;
+  };
+
+  const sendDecision = (decision) => {
+    cleanup();
+    chrome.runtime.sendMessage({
+      type: MSG_TYPES.RESOLVE_CONFIRMATION,
+      decision
+    });
+  };
+
+  const onApprove = () => sendDecision({ approved: true, userReply: els.customReplyInput.value });
+  const onSkip = () => sendDecision({ approved: false, skip: true });
+  const onStop = () => sendDecision({ approved: false, stop: true });
+
+  els.confirmApproveBtn.addEventListener('click', onApprove);
+  els.confirmSkipBtn.addEventListener('click', onSkip);
+  els.confirmStopBtn.addEventListener('click', onStop);
+  activeBgConfirmCleanup = cleanup;
 }
 
 function setRunningUi(isRunning) {
@@ -706,6 +859,8 @@ function setRunningUi(isRunning) {
   els.executionModeSelect.disabled = isRunning;
   els.maxStepsInput.disabled = isRunning;
   els.useVisionCheckbox.disabled = isRunning;
+  els.allowBackgroundCheckbox.disabled = isRunning;
+  els.allowMultiTabCheckbox.disabled = isRunning;
 }
 
 async function startRun() {
@@ -719,8 +874,68 @@ async function startRun() {
 
   await saveSettings();
   const settings = collectSettings();
+  const tab = await getActiveTab();
 
+  if (settings.allowBackgroundExecution) {
+    setRunningUi(true);
+    backgroundRunActive = true;
+
+    const initialPdf = loadedPdf
+      ? {
+          filename: loadedPdf.filename,
+          pdfBase64: uint8ArrayToBase64(loadedPdf.bytes),
+          downloadId: loadedPdf.downloadId,
+          currentPage: loadedPdf.currentPage
+        }
+      : null;
+
+    const bgRes = await chrome.runtime.sendMessage({
+      type: MSG_TYPES.START_BACKGROUND_RUN,
+      tabId: tab.id,
+      goal,
+      settings,
+      initialPdf
+    });
+
+    if (bgRes?.ok) {
+      renderWorkspaceBar(bgRes.workspace);
+      return;
+    }
+
+    backgroundRunActive = false;
+    if (!bgRes?.fallbackToForeground) {
+      setRunningUi(false);
+      els.resultBanner.className = 'result-banner error';
+      els.resultBanner.textContent = bgRes?.error || 'バックグラウンド実行を開始できませんでした。';
+      els.resultBanner.classList.remove('hidden');
+      return;
+    }
+  }
+
+  // Foreground execution (or automatic fallback when Offscreen LanguageModel is unavailable)
   setRunningUi(true);
+  if (settings.allowMultiTab) {
+    try {
+      const wsRes = await chrome.runtime.sendMessage({
+        type: MSG_TYPES.INIT_WORKSPACE,
+        tabId: tab.id,
+        multiTabEnabled: true,
+        backgroundMode: false,
+        groupTitle: settings.tabGroupTitle,
+        groupColor: settings.tabGroupColor
+      });
+      if (wsRes?.ok) {
+        fgWorkspaceActive = true;
+        renderWorkspaceBar(wsRes.workspace);
+      }
+    } catch {
+      fgWorkspaceActive = false;
+    }
+  } else {
+    fgWorkspaceActive = false;
+    els.workspaceBar.classList.add('hidden');
+  }
+
   activeController = new AgentController({
     nanoClient,
     observe: observeCurrentTab,
@@ -733,6 +948,7 @@ async function startRun() {
     await activeController.run({ goal, settings });
   } finally {
     activeController = null;
+    fgWorkspaceActive = false;
     setRunningUi(false);
     els.confirmCard.classList.add('hidden');
   }
@@ -772,13 +988,73 @@ els.downloadModelBtn.addEventListener('click', async () => {
 
 els.runBtn.addEventListener('click', startRun);
 els.stopBtn.addEventListener('click', () => {
-  activeController?.stop();
+  if (backgroundRunActive) {
+    chrome.runtime.sendMessage({ type: MSG_TYPES.STOP_BACKGROUND_RUN });
+  } else {
+    activeController?.stop();
+  }
 });
 els.clearLogBtn.addEventListener('click', clearTimeline);
 
 els.executionModeSelect.addEventListener('change', saveSettings);
 els.maxStepsInput.addEventListener('change', saveSettings);
 els.useVisionCheckbox.addEventListener('change', saveSettings);
+els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
+els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || message.type !== MSG_TYPES.AGENT_EVENT) {
+    return false;
+  }
+  if (message.workspace) {
+    renderWorkspaceBar(message.workspace);
+  }
+  if (message.event && (backgroundRunActive || message.event.type !== 'workspace_updated')) {
+    handleAgentEvent(message.event);
+  }
+  return false;
+});
+
+async function restoreBackgroundRunState() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_BACKGROUND_RUN_STATE });
+    if (!res?.ok || !res.state) return;
+    const { state, workspace } = res;
+
+    if (workspace) {
+      renderWorkspaceBar(workspace);
+    }
+
+    if (state.loadedPdfMeta?.pdfBase64) {
+      const bytes = base64ToUint8Array(state.loadedPdfMeta.pdfBase64);
+      await loadPdfFromBytes(
+        bytes,
+        state.loadedPdfMeta.filename,
+        state.loadedPdfMeta.downloadId ?? null
+      );
+      if (loadedPdf && state.loadedPdfMeta.currentPage) {
+        loadedPdf.currentPage = state.loadedPdfMeta.currentPage;
+        renderLoadedPdfUi();
+      }
+    }
+
+    if (state.running || (Array.isArray(state.events) && state.events.length > 0)) {
+      if (state.goal && !els.goalInput.value.trim()) {
+        els.goalInput.value = state.goal;
+      }
+      backgroundRunActive = Boolean(state.running);
+      setRunningUi(backgroundRunActive);
+      for (const ev of state.events) {
+        handleAgentEvent(ev);
+      }
+      if (state.pendingConfirmation) {
+        showBackgroundConfirmationCard(state.pendingConfirmation);
+      }
+    }
+  } catch {
+    // Ignore restore failure on cold start
+  }
+}
 
 els.closeImageModalBtn.addEventListener('click', () => els.imageModal.classList.add('hidden'));
 els.imageModalBackdrop.addEventListener('click', () => els.imageModal.classList.add('hidden'));
@@ -892,3 +1168,4 @@ renderSampleChips();
 renderLoadedPdfUi();
 await loadSettings();
 await refreshAvailability();
+await restoreBackgroundRunState();

@@ -98,12 +98,22 @@ function buildElementTextSummary(element) {
  * Assess risk level of a planned action before executing it.
  * Returns { level: 'blocked' | 'confirm' | 'safe', reason: string, normalizedUrl?: string }
  */
-export function assessActionRisk(action, snapshot) {
+export function assessActionRisk(action, snapshot, options = {}) {
   if (!action || typeof action !== 'object') {
     return { level: 'blocked', reason: '無効なアクションです。' };
   }
 
-  if (action.action === 'navigate') {
+  if (
+    options.allowMultiTab === false &&
+    (action.action === 'open_tab' || action.action === 'switch_tab' || action.action === 'close_tab')
+  ) {
+    return {
+      level: 'blocked',
+      reason: '複数タブでの作業が許可されていないため、タブ操作はブロックされました。'
+    };
+  }
+
+  if (action.action === 'navigate' || action.action === 'open_tab') {
     const check = validateNavigationUrl(action.url);
     if (!check.valid) {
       return { level: 'blocked', reason: check.reason };
@@ -153,7 +163,8 @@ export function getActionSignature(action) {
     text: action.text ?? null,
     key: action.key ?? null,
     direction: action.direction ?? null,
-    url: action.url ?? null
+    url: action.url ?? null,
+    tabIndex: action.tabIndex ?? null
   });
 }
 

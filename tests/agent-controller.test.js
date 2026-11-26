@@ -179,3 +179,39 @@ test('AgentController passes pdfContext from observe to prompt and handles downl
   assert.match(promptsSeen[1], /Doc\.pdf/);
   assert.match(promptsSeen[1], /本文テスト/);
 });
+
+test('AgentController blocks multi-tab actions when allowMultiTab is false', async () => {
+  let executedCount = 0;
+  let step = 0;
+
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction() {
+        step += 1;
+        if (step === 1) {
+          return { action: { thought: '新タブ', action: 'open_tab', url: 'https://example.com' }, usage: {} };
+        }
+        return { action: { thought: '終了', action: 'done', message: '完了' }, usage: {} };
+      }
+    },
+    async observe() {
+      return { snapshot: { restricted: false, url: 'https://example.com', elements: [] } };
+    },
+    async executeAction() {
+      executedCount += 1;
+      return { ok: true };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: 'テスト',
+    settings: { maxSteps: 3, allowMultiTab: false, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'completed');
+  assert.equal(executedCount, 0);
+  assert.equal(outcome.history[0].result.blocked, true);
+});

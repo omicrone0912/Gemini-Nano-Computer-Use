@@ -8,6 +8,9 @@ export const ACTION_TYPES = Object.freeze([
   'go_back',
   'go_forward',
   'wait',
+  'open_tab',
+  'switch_tab',
+  'close_tab',
   'download_page_pdf',
   'read_pdf',
   'done',
@@ -23,6 +26,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   maxSteps: 15,
   executionMode: EXECUTION_MODES.AUTO_SAFE,
   useVision: true,
+  allowBackgroundExecution: true,
+  allowMultiTab: true,
+  tabGroupTitle: 'Nano AI',
+  tabGroupColor: 'blue',
   maxElements: 60,
   maxImageWidth: 768,
   actionDelayMs: 650
@@ -62,6 +69,10 @@ export const SAMPLE_TASKS = Object.freeze([
   {
     label: '画面をPDF保存＆読込',
     goal: '現在開いている画面を PDF としてダウンロードして読み込み、1ページ目の内容を確認して日本語で要約してください。'
+  },
+  {
+    label: '複数タブで比較調査',
+    goal: '作業用タブグループ内で新しいタブを開いて https://ja.wikipedia.org と https://example.com をそれぞれ確認し、両方のタイトルと概要を比較して完了してください。'
   }
 ]);
 
@@ -76,5 +87,20 @@ export const MSG_TYPES = Object.freeze({
   HISTORY_FORWARD: 'NANO_CU_HISTORY_FORWARD',
   PRINT_TAB_TO_PDF: 'NANO_CU_PRINT_TAB_TO_PDF',
   GET_RECENT_PDF_DOWNLOADS: 'NANO_CU_GET_RECENT_PDF_DOWNLOADS',
-  SHOW_DOWNLOAD_IN_FOLDER: 'NANO_CU_SHOW_DOWNLOAD_IN_FOLDER'
+  SHOW_DOWNLOAD_IN_FOLDER: 'NANO_CU_SHOW_DOWNLOAD_IN_FOLDER',
+  INIT_WORKSPACE: 'NANO_CU_INIT_WORKSPACE',
+  GET_WORKSPACE_STATE: 'NANO_CU_GET_WORKSPACE_STATE',
+  OPEN_WORKSPACE_TAB: 'NANO_CU_OPEN_WORKSPACE_TAB',
+  SWITCH_WORKSPACE_TAB: 'NANO_CU_SWITCH_WORKSPACE_TAB',
+  CLOSE_WORKSPACE_TAB: 'NANO_CU_CLOSE_WORKSPACE_TAB',
+  FOCUS_WORKSPACE_TAB: 'NANO_CU_FOCUS_WORKSPACE_TAB',
+  START_BACKGROUND_RUN: 'NANO_CU_START_BACKGROUND_RUN',
+  STOP_BACKGROUND_RUN: 'NANO_CU_STOP_BACKGROUND_RUN',
+  GET_BACKGROUND_RUN_STATE: 'NANO_CU_GET_BACKGROUND_RUN_STATE',
+  RESOLVE_CONFIRMATION: 'NANO_CU_RESOLVE_CONFIRMATION',
+  AGENT_EVENT: 'NANO_CU_AGENT_EVENT',
+  OFFSCREEN_NANO_INIT: 'NANO_CU_OFFSCREEN_NANO_INIT',
+  OFFSCREEN_NANO_DECIDE: 'NANO_CU_OFFSCREEN_NANO_DECIDE',
+  OFFSCREEN_NANO_ABORT: 'NANO_CU_OFFSCREEN_NANO_ABORT',
+  OFFSCREEN_NANO_DESTROY: 'NANO_CU_OFFSCREEN_NANO_DESTROY'
 });

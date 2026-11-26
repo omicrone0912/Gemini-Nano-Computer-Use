@@ -46,3 +46,27 @@ test('detectActionLoop detects 3 identical consecutive actions', () => {
   assert.equal(detectActionLoop(history, { action: 'click', elementId: 5 }, 3), true);
   assert.equal(detectActionLoop(history, { action: 'scroll', direction: 'down' }, 3), false);
 });
+
+test('assessActionRisk enforces allowMultiTab and validates open_tab URL', () => {
+  const blocked = assessActionRisk(
+    { action: 'open_tab', url: 'https://example.com' },
+    { elements: [] },
+    { allowMultiTab: false }
+  );
+  assert.equal(blocked.level, 'blocked');
+
+  const allowed = assessActionRisk(
+    { action: 'open_tab', url: 'example.com' },
+    { elements: [] },
+    { allowMultiTab: true }
+  );
+  assert.equal(allowed.level, 'safe');
+  assert.equal(allowed.normalizedUrl, 'https://example.com/');
+
+  const badScheme = assessActionRisk(
+    { action: 'open_tab', url: 'javascript:alert(1)' },
+    { elements: [] },
+    { allowMultiTab: true }
+  );
+  assert.equal(badScheme.level, 'blocked');
+});

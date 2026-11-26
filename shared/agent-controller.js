@@ -47,6 +47,12 @@ function summarizeAction(action) {
       return '次のページへ進む';
     case 'wait':
       return `${action.ms}ms 待機`;
+    case 'open_tab':
+      return `タブグループ内に新規タブを開く (${action.url})`;
+    case 'switch_tab':
+      return `タブグループのタブ #${action.tabIndex} へ切り替え`;
+    case 'close_tab':
+      return action.tabIndex ? `タブグループのタブ #${action.tabIndex} を閉じる` : '現在の作業タブを閉じる';
     case 'download_page_pdf':
       return `現在画面を PDF として保存・読み込み${action.filename ? ` (${action.filename})` : ''}`;
     case 'read_pdf':
@@ -171,6 +177,7 @@ export class AgentController {
         const snapshot = observation?.snapshot ?? { restricted: true, url: '', title: '', elements: [] };
         const image = observation?.image ?? null;
         const pdfContext = observation?.pdfContext ?? null;
+        const workspaceContext = observation?.workspaceContext ?? null;
 
         this.emit('observation_captured', {
           step,
@@ -193,7 +200,8 @@ export class AgentController {
           maxSteps: merged.maxSteps,
           hasImage: Boolean(image && initResult.multimodal),
           loopWarning,
-          pdfContext
+          pdfContext,
+          workspaceContext
         });
         loopWarning = '';
 
@@ -280,7 +288,7 @@ export class AgentController {
         }
 
         // 3. Safety & Loop check
-        const risk = assessActionRisk(action, snapshot);
+        const risk = assessActionRisk(action, snapshot, { allowMultiTab: merged.allowMultiTab });
         if (risk.level === 'blocked') {
           const blockResult = { ok: false, blocked: true, error: risk.reason };
           history.push({ step, action, result: blockResult });

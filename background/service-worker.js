@@ -1,5 +1,28 @@
-import { MSG_TYPES } from '../shared/constants.js';
-import { sanitizePdfFilename } from '../shared/pdf-parser.js';
+import { AgentController } from '../shared/agent-controller.js';
+import { DEFAULT_SETTINGS, MSG_TYPES } from '../shared/constants.js';
+import {
+  base64ToUint8Array,
+  extractPdfPageSnippet,
+  parsePdfBytes,
+  sanitizePdfFilename
+} from '../shared/pdf-parser.js';
+import { SYSTEM_PROMPT } from '../shared/prompt-builder.js';
+import { TabWorkspaceManager } from '../shared/tab-workspace.js';
+
+const workspace = new TabWorkspaceManager(chrome);
+let creatingOffscreen = null;
+let bgController = null;
+let pendingConfirmResolver = null;
+
+const bgState = {
+  running: false,
+  goal: '',
+  settings: { ...DEFAULT_SETTINGS },
+  events: [],
+  pendingConfirmation: null,
+  lastOutcome: null,
+  loadedPdf: null
+};
 
 function isRestrictedUrl(url = '') {
   if (!url) return true;
@@ -227,6 +250,424 @@ async function getRecentPdfDownloads() {
   return { ok: true, items: pdfs };
 }
 
+async function ensureOffscreenDocument() {
+  if (typeof chrome.runtime.getContexts === 'function') {
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT']
+    });
+    if (existing.length > 0) {
+      return;
+    }
+  }
+
+  if (creatingOffscreen) {
+    await creatingOffscreen;
+    return;
+  }
+
+  creatingOffscreen = chrome.offscreen.createDocument({
+    url: 'offscreen/offscreen.html',
+    reasons: ['DOM_PARSER', 'BLOBS'],
+    justification: 'Keep Gemini Nano session active and annotate screenshots in the background.'
+  });
+
+  try {
+    await creatingOffscreen;
+  } finally {
+    creatingOffscreen = null;
+  }
+}
+
+function setActionBadge(text, color = '#2563eb') {
+  try {
+    chrome.action?.setBadgeText?.({ text: text || '' });
+    if (text) {
+      chrome.action?.setBadgeBackgroundColor?.({ color });
+    }
+  } catch {
+    // Ignore badge API errors
+  }
+}
+
+function recordAndBroadcastEvent(event, extra = {}) {
+  // Keep recent events bounded and drop large preview URLs from older entries
+  const compactEvent = { ...event };
+  bgState.events.push(compactEvent);
+  if (bgState.events.length > 100) {
+    bgState.events.shift();
+  }
+  if (bgState.events.length > 12) {
+    for (let i = 0; i < bgState.events.length - 12; i += 1) {
+      if (bgState.events[i].previewDataUrl) {
+        delete bgState.events[i].previewDataUrl;
+      }
+    }
+  }
+
+  if (event.type === 'step_started') {
+    setActionBadge(`${event.step}/${event.maxSteps}`, '#2563eb');
+  } else if (event.type === 'run_finished') {
+    bgState.lastOutcome = { status: event.status, message: event.message };
+    bgState.running = false;
+    setActionBadge(event.status === 'completed' ? 'OK' : '', '#16a34a');
+    if (event.status !== 'completed') {
+      setActionBadge('', '#2563eb');
+    }
+  }
+
+  chrome.runtime
+    .sendMessage({
+      type: MSG_TYPES.AGENT_EVENT,
+      event: compactEvent,
+      ...extra
+    })
+    .catch(() => {
+      // Side panel might be closed; ignore missing receiver
+    });
+}
+
+function getBgPdfContext() {
+  if (!bgState.loadedPdf?.parsed) return null;
+  const snippet = extractPdfPageSnippet(bgState.loadedPdf.parsed, bgState.loadedPdf.currentPage, 1600);
+  return {
+    filename: bgState.loadedPdf.filename,
+    pageCount: bgState.loadedPdf.parsed.pageCount,
+    currentPage: snippet.pageNumber,
+    currentPageText: snippet.text
+  };
+}
+
+function createOffscreenNanoAdapter() {
+  let cachedInit = { multimodal: false, apiVariant: 'OffscreenLanguageModel' };
+  return {
+    async initialize({ useVision, systemPrompt }) {
+      await ensureOffscreenDocument();
+      const res = await chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: MSG_TYPES.OFFSCREEN_NANO_INIT,
+        useVision,
+        systemPrompt: systemPrompt || SYSTEM_PROMPT
+      });
+      if (!res?.ok) {
+        throw new Error(res?.error || 'Offscreen Gemini Nano の初期化に失敗しました。');
+      }
+      cachedInit = { multimodal: Boolean(res.multimodal), apiVariant: res.apiVariant };
+      return cachedInit;
+    },
+    async decideAction({ promptText, image, signal }) {
+      if (signal?.aborted) {
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      const onAbort = () => {
+        chrome.runtime.sendMessage({ target: 'offscreen', type: MSG_TYPES.OFFSCREEN_NANO_ABORT }).catch(() => {});
+      };
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+      try {
+        const res = await chrome.runtime.sendMessage({
+          target: 'offscreen',
+          type: MSG_TYPES.OFFSCREEN_NANO_DECIDE,
+          promptText,
+          rawScreenshotDataUrl: image?.rawScreenshotDataUrl || null,
+          snapshot: image?.snapshot || null,
+          maxImageWidth: image?.maxImageWidth || 768
+        });
+        if (!res?.ok) {
+          if (res?.aborted) {
+            const err = new Error('Aborted');
+            err.name = 'AbortError';
+            throw err;
+          }
+          throw new Error(res?.error || 'Offscreen 推論に失敗しました。');
+        }
+        return {
+          action: res.action,
+          usage: res.usage,
+          previewDataUrl: res.previewDataUrl || null
+        };
+      } finally {
+        signal?.removeEventListener?.('abort', onAbort);
+      }
+    }
+  };
+}
+
+async function observeWorkspaceTab({ useVision, maxElements, maxImageWidth }) {
+  const tab = await workspace.getCurrentTab();
+  if (!tab?.id) {
+    throw new Error('作業グループ内に操作可能なタブが見つかりません。');
+  }
+
+  const ensureRes = await ensureContentScript(tab.id);
+  let snapshot;
+  if (ensureRes?.restricted) {
+    snapshot = {
+      restricted: true,
+      url: ensureRes.url || tab.url || '',
+      title: ensureRes.title || tab.title || '制限ページ',
+      elements: []
+    };
+  } else {
+    const snapRes = await chrome.tabs.sendMessage(tab.id, {
+      type: MSG_TYPES.CAPTURE_SNAPSHOT,
+      options: { maxElements }
+    });
+    if (!snapRes?.ok) {
+      throw new Error(snapRes?.error || 'ページ状態の取得に失敗しました。');
+    }
+    snapshot = snapRes.snapshot;
+  }
+
+  let image = null;
+  let previewDataUrl = null;
+  // Capture visible tab ONLY when target tab is active so background tasks never capture the user's active tab
+  if (useVision && tab.active) {
+    const capRes = await captureTabImage(tab.windowId);
+    if (capRes?.ok && capRes.dataUrl) {
+      image = { rawScreenshotDataUrl: capRes.dataUrl, snapshot, maxImageWidth };
+      previewDataUrl = capRes.dataUrl;
+    }
+  }
+
+  const workspaceContext = await workspace.getWorkspaceContext();
+  return {
+    tab,
+    snapshot,
+    image,
+    previewDataUrl,
+    pdfContext: getBgPdfContext(),
+    workspaceContext
+  };
+}
+
+async function executeWorkspaceAction(action) {
+  const tab = await workspace.getCurrentTab();
+  if (!tab?.id) {
+    return { ok: false, error: '操作対象のタブが見つかりません。' };
+  }
+
+  switch (action.action) {
+    case 'navigate':
+      return navigateTab(tab.id, action.url);
+    case 'go_back':
+      return historyStep(tab.id, 'back');
+    case 'go_forward':
+      return historyStep(tab.id, 'forward');
+    case 'wait':
+      await new Promise((r) => setTimeout(r, action.ms || 1000));
+      return { ok: true, detail: `${action.ms || 1000}ms 待機しました。` };
+    case 'open_tab': {
+      const res = await workspace.openTab(action.url);
+      await waitForTabComplete(res.tab.id, 10000);
+      const updatedWs = await workspace.getWorkspaceContext();
+      return {
+        ok: true,
+        detail: `タブグループに新しいタブ (${action.url}) を開きました。`,
+        workspace: updatedWs
+      };
+    }
+    case 'switch_tab': {
+      const res = await workspace.switchTab({ tabIndex: action.tabIndex });
+      return {
+        ok: true,
+        detail: `タブ #${action.tabIndex} (${res.tab?.title || res.tab?.url || ''}) へ切り替えました。`,
+        workspace: res.workspace
+      };
+    }
+    case 'close_tab': {
+      const res = await workspace.closeTab({ tabIndex: action.tabIndex });
+      return {
+        ok: true,
+        detail: '作業タブを閉じました。',
+        workspace: res.workspace
+      };
+    }
+    case 'download_page_pdf': {
+      const pdfRes = await printTabToPdf(tab.id, action.filename || '', false);
+      if (!pdfRes?.ok) {
+        return { ok: false, error: pdfRes?.error || 'PDF 化に失敗しました。' };
+      }
+      const bytes = base64ToUint8Array(pdfRes.pdfBase64);
+      const parsed = await parsePdfBytes(bytes);
+      bgState.loadedPdf = {
+        filename: pdfRes.filename,
+        parsed,
+        currentPage: 1,
+        pdfBase64: pdfRes.pdfBase64,
+        downloadId: pdfRes.downloadId ?? null
+      };
+      const snippet = extractPdfPageSnippet(parsed, 1, 900);
+      return {
+        ok: true,
+        detail: `「${pdfRes.filename}」(${parsed.pageCount}ページ) を保存・読み込みしました。`,
+        promptNote: snippet.text
+          ? `保存済PDF「${pdfRes.filename}」(${parsed.pageCount}P) 1ページ目抜粋: ${snippet.text}`
+          : `保存済PDF「${pdfRes.filename}」(${parsed.pageCount}P) を読み込みました。`,
+        pdfUpdate: {
+          filename: pdfRes.filename,
+          pdfBase64: pdfRes.pdfBase64,
+          downloadId: pdfRes.downloadId ?? null
+        }
+      };
+    }
+    case 'read_pdf': {
+      if (!bgState.loadedPdf?.parsed) {
+        return {
+          ok: false,
+          error: '現在 PDF が読み込まれていません。先に download_page_pdf を実行するか PDF を読み込んでください。'
+        };
+      }
+      const total = bgState.loadedPdf.parsed.pageCount || 1;
+      const reqPage = Math.max(1, Math.min(total, Number(action.page) || 1));
+      bgState.loadedPdf.currentPage = reqPage;
+      const snippet = extractPdfPageSnippet(bgState.loadedPdf.parsed, reqPage, 1600);
+      return {
+        ok: true,
+        detail: `「${bgState.loadedPdf.filename}」の ${reqPage} / ${total} ページ目を読み込みました。`,
+        promptNote: snippet.text
+          ? `PDF「${bgState.loadedPdf.filename}」P.${reqPage}: ${snippet.text}`
+          : `PDF「${bgState.loadedPdf.filename}」P.${reqPage} にテキストが見つかりませんでした。`
+      };
+    }
+    default:
+      return chrome.tabs.sendMessage(tab.id, {
+        type: MSG_TYPES.EXECUTE_DOM_ACTION,
+        action
+      });
+  }
+}
+
+async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = null }) {
+  if (bgState.running) {
+    return { ok: false, error: 'すでにバックグラウンドでタスクを実行中です。' };
+  }
+
+  const merged = { ...DEFAULT_SETTINGS, ...settings };
+  const initialTab = await chrome.tabs.get(tabId);
+
+  const nanoAdapter = createOffscreenNanoAdapter();
+  try {
+    await nanoAdapter.initialize({
+      useVision: merged.useVision,
+      systemPrompt: SYSTEM_PROMPT
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      fallbackToForeground: true,
+      error: error?.message || String(error)
+    };
+  }
+
+  const wsContext = await workspace.initialize({
+    initialTab,
+    multiTabEnabled: merged.allowMultiTab,
+    backgroundMode: merged.allowBackgroundExecution,
+    groupTitle: merged.tabGroupTitle,
+    groupColor: merged.tabGroupColor
+  });
+
+  bgState.running = true;
+  bgState.goal = goal;
+  bgState.settings = merged;
+  bgState.events = [];
+  bgState.pendingConfirmation = null;
+  bgState.lastOutcome = null;
+
+  if (initialPdf?.pdfBase64) {
+    try {
+      const bytes = base64ToUint8Array(initialPdf.pdfBase64);
+      const parsed = await parsePdfBytes(bytes);
+      bgState.loadedPdf = {
+        filename: initialPdf.filename || 'document.pdf',
+        parsed,
+        currentPage: initialPdf.currentPage || 1,
+        pdfBase64: initialPdf.pdfBase64,
+        downloadId: initialPdf.downloadId ?? null
+      };
+    } catch {
+      bgState.loadedPdf = null;
+    }
+  } else {
+    bgState.loadedPdf = null;
+  }
+
+  bgController = new AgentController({
+    nanoClient: nanoAdapter,
+    observe: observeWorkspaceTab,
+    executeAction: executeWorkspaceAction,
+    requestConfirmation: (details) => {
+      bgState.pendingConfirmation = details;
+      setActionBadge('!', '#d97706');
+      recordAndBroadcastEvent({
+        type: 'confirmation_requested',
+        details,
+        timestamp: Date.now()
+      });
+      return new Promise((resolve) => {
+        pendingConfirmResolver = (res) => {
+          bgState.pendingConfirmation = null;
+          pendingConfirmResolver = null;
+          resolve(res);
+        };
+      });
+    },
+    onEvent: async (event) => {
+      const ws = await workspace.getWorkspaceContext().catch(() => null);
+      recordAndBroadcastEvent(event, { workspace: ws });
+    }
+  });
+
+  // Fire-and-forget execution loop in Service Worker
+  bgController
+    .run({ goal, settings: merged })
+    .finally(async () => {
+      bgState.running = false;
+      bgState.pendingConfirmation = null;
+      pendingConfirmResolver = null;
+      bgController = null;
+    });
+
+  return { ok: true, workspace: wsContext };
+}
+
+chrome.tabs.onCreated.addListener(async (tab) => {
+  try {
+    const adopted = await workspace.adoptChildTab(tab);
+    if (adopted) {
+      const ws = await workspace.getWorkspaceContext();
+      chrome.runtime
+        .sendMessage({
+          type: MSG_TYPES.AGENT_EVENT,
+          event: { type: 'workspace_updated', timestamp: Date.now() },
+          workspace: ws
+        })
+        .catch(() => {});
+    }
+  } catch {
+    // Ignore tab adoption failures
+  }
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  try {
+    const changed = await workspace.handleTabRemoved(tabId);
+    if (changed) {
+      const ws = await workspace.getWorkspaceContext();
+      chrome.runtime
+        .sendMessage({
+          type: MSG_TYPES.AGENT_EVENT,
+          event: { type: 'workspace_updated', timestamp: Date.now() },
+          workspace: ws
+        })
+        .catch(() => {});
+    }
+  } catch {
+    // Ignore tab removal sync failures
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') {
     return false;
@@ -275,6 +716,103 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             chrome.downloads.show(message.downloadId);
           }
           sendResponse({ ok: true });
+          break;
+        }
+        case MSG_TYPES.INIT_WORKSPACE: {
+          const initialTab = await chrome.tabs.get(message.tabId);
+          const ws = await workspace.initialize({
+            initialTab,
+            multiTabEnabled: Boolean(message.multiTabEnabled),
+            backgroundMode: Boolean(message.backgroundMode),
+            groupTitle: message.groupTitle || 'Nano AI',
+            groupColor: message.groupColor || 'blue'
+          });
+          sendResponse({ ok: true, workspace: ws });
+          break;
+        }
+        case MSG_TYPES.GET_WORKSPACE_STATE: {
+          const ws = await workspace.getWorkspaceContext();
+          sendResponse({ ok: true, workspace: ws });
+          break;
+        }
+        case MSG_TYPES.OPEN_WORKSPACE_TAB: {
+          const res = await workspace.openTab(message.url);
+          await waitForTabComplete(res.tab.id, 10000);
+          const ws = await workspace.getWorkspaceContext();
+          sendResponse({ ok: true, tab: res.tab, workspace: ws });
+          break;
+        }
+        case MSG_TYPES.SWITCH_WORKSPACE_TAB: {
+          const res = await workspace.switchTab({
+            tabIndex: message.tabIndex,
+            tabId: message.tabId
+          });
+          sendResponse(res);
+          break;
+        }
+        case MSG_TYPES.CLOSE_WORKSPACE_TAB: {
+          const res = await workspace.closeTab({
+            tabIndex: message.tabIndex,
+            tabId: message.tabId
+          });
+          sendResponse(res);
+          break;
+        }
+        case MSG_TYPES.FOCUS_WORKSPACE_TAB: {
+          const ws = await workspace.focusTab(message.tabId);
+          sendResponse({ ok: true, workspace: ws });
+          break;
+        }
+        case MSG_TYPES.START_BACKGROUND_RUN: {
+          const res = await startBackgroundRun({
+            tabId: message.tabId,
+            goal: message.goal,
+            settings: message.settings,
+            initialPdf: message.initialPdf || null
+          });
+          sendResponse(res);
+          break;
+        }
+        case MSG_TYPES.STOP_BACKGROUND_RUN: {
+          if (pendingConfirmResolver) {
+            pendingConfirmResolver({ approved: false, stop: true });
+          }
+          bgController?.stop();
+          setActionBadge('', '#2563eb');
+          sendResponse({ ok: true });
+          break;
+        }
+        case MSG_TYPES.RESOLVE_CONFIRMATION: {
+          if (pendingConfirmResolver) {
+            pendingConfirmResolver(message.decision || { approved: false, stop: true });
+            sendResponse({ ok: true });
+          } else {
+            sendResponse({ ok: false, error: '保留中の確認はありません。' });
+          }
+          break;
+        }
+        case MSG_TYPES.GET_BACKGROUND_RUN_STATE: {
+          const ws = await workspace.getWorkspaceContext().catch(() => null);
+          sendResponse({
+            ok: true,
+            state: {
+              running: bgState.running,
+              goal: bgState.goal,
+              settings: bgState.settings,
+              events: bgState.events,
+              pendingConfirmation: bgState.pendingConfirmation,
+              lastOutcome: bgState.lastOutcome,
+              loadedPdfMeta: bgState.loadedPdf
+                ? {
+                    filename: bgState.loadedPdf.filename,
+                    pdfBase64: bgState.loadedPdf.pdfBase64,
+                    downloadId: bgState.loadedPdf.downloadId,
+                    currentPage: bgState.loadedPdf.currentPage
+                  }
+                : null
+            },
+            workspace: ws
+          });
           break;
         }
         default:

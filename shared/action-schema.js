@@ -58,6 +58,10 @@ export const ACTION_RESPONSE_SCHEMA = Object.freeze({
       type: 'integer',
       description: 'read_pdf で読み込むページ番号（1始まり）'
     },
+    tabIndex: {
+      type: 'integer',
+      description: 'switch_tab / close_tab で対象にするワークスペース内タブ番号（1始まり）'
+    },
     message: {
       type: 'string',
       description: 'done または ask_user 時にユーザーへ伝えるメッセージ'
@@ -87,7 +91,11 @@ const ACTION_ALIASES = Object.freeze({
   print_pdf: 'download_page_pdf',
   export_pdf: 'download_page_pdf',
   inspect_pdf: 'read_pdf',
-  pdf_read: 'read_pdf'
+  pdf_read: 'read_pdf',
+  new_tab: 'open_tab',
+  create_tab: 'open_tab',
+  select_tab: 'switch_tab',
+  focus_tab: 'switch_tab'
 });
 
 const VALID_DIRECTIONS = new Set(['up', 'down', 'top', 'bottom']);
@@ -240,6 +248,11 @@ export function parseActionResponse(rawText) {
     action.page = pageNum;
   }
 
+  const tabIndex = toOptionalPositiveInt(parsed.tabIndex ?? parsed.tab_index ?? parsed.tabId);
+  if (tabIndex !== undefined) {
+    action.tabIndex = tabIndex;
+  }
+
   // Action-specific required fields & sensible defaults
   switch (normalizedAction) {
     case 'click':
@@ -286,6 +299,16 @@ export function parseActionResponse(rawText) {
     case 'read_pdf':
       if (!action.page) {
         action.page = 1;
+      }
+      break;
+    case 'open_tab':
+      if (!action.url) {
+        action.url = 'https://www.google.com';
+      }
+      break;
+    case 'switch_tab':
+      if (!action.tabIndex) {
+        throw new Error('switch_tab アクションには正の整数 tabIndex が必要です。');
       }
       break;
     case 'done':

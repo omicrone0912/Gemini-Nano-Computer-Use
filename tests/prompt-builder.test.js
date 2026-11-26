@@ -60,3 +60,23 @@ test('buildStepPrompt includes loaded PDF context when present', () => {
   assert.match(prompt, /ページ: 2 \/ 5/);
   assert.match(prompt, /ローカルPDF解析の仕様/);
 });
+
+test('buildStepPrompt includes workspace tab group context when multiTabEnabled', () => {
+  const prompt = buildStepPrompt({
+    goal: '2つのタブを比較する',
+    snapshot: { restricted: false, url: 'https://b.example', title: 'Site B', elements: [] },
+    workspaceContext: {
+      multiTabEnabled: true,
+      backgroundMode: true,
+      groupTitle: 'Nano AI',
+      tabs: [
+        { index: 1, title: 'Site A', url: 'https://a.example', isCurrent: false },
+        { index: 2, title: 'Site B', url: 'https://b.example', isCurrent: true }
+      ]
+    }
+  });
+
+  assert.match(prompt, /# ワークスペースのタブ一覧/);
+  assert.match(prompt, /Nano AI/);
+  assert.match(prompt, /\[2\] \(操作中\) Site B/);
+});

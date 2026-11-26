@@ -12,10 +12,17 @@ test('manifest.json enforces strict local-only CSP and required PDF permissions'
   assert.match(csp, /object-src 'none'/);
   assert.ok(manifest.permissions.includes('debugger'));
   assert.ok(manifest.permissions.includes('downloads'));
+  assert.ok(manifest.permissions.includes('tabGroups'));
+  assert.ok(manifest.permissions.includes('offscreen'));
 });
 
-test('sidepanel.html contains no inline style attributes or style tags under style-src self', () => {
-  const html = readFileSync('sidepanel/sidepanel.html', 'utf8');
-  assert.doesNotMatch(html, /\sstyle\s*=/i);
-  assert.doesNotMatch(html, /<style[\s>]/i);
+test('sidepanel.html and offscreen.html contain no inline styles or inline scripts under CSP', () => {
+  const sidepanelHtml = readFileSync('sidepanel/sidepanel.html', 'utf8');
+  assert.doesNotMatch(sidepanelHtml, /\sstyle\s*=/i);
+  assert.doesNotMatch(sidepanelHtml, /<style[\s>]/i);
+
+  const offscreenHtml = readFileSync('offscreen/offscreen.html', 'utf8');
+  assert.doesNotMatch(offscreenHtml, /\sstyle\s*=/i);
+  assert.doesNotMatch(offscreenHtml, /<style[\s>]/i);
+  assert.doesNotMatch(offscreenHtml, /<script(?![^>]*\bsrc=)[^>]*>/i);
 });

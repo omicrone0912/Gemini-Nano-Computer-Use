@@ -63,3 +63,18 @@ test('parseActionResponse normalizes download_page_pdf and read_pdf actions', ()
   assert.equal(rdPage.action, 'read_pdf');
   assert.equal(rdPage.page, 3);
 });
+
+test('parseActionResponse normalizes open_tab, switch_tab, and close_tab actions', () => {
+  const openTab = parseActionResponse('{"thought":"新タブ","action":"new_tab","url":"https://example.com"}');
+  assert.equal(openTab.action, 'open_tab');
+  assert.equal(openTab.url, 'https://example.com');
+
+  const switchTab = parseActionResponse('{"thought":"タブ切替","action":"select_tab","tabIndex":"2"}');
+  assert.equal(switchTab.action, 'switch_tab');
+  assert.equal(switchTab.tabIndex, 2);
+
+  assert.throws(() => parseActionResponse('{"thought":"切替","action":"switch_tab"}'), /tabIndex/);
+
+  const closeTab = parseActionResponse('{"thought":"閉じる","action":"close_tab"}');
+  assert.equal(closeTab.action, 'close_tab');
+});

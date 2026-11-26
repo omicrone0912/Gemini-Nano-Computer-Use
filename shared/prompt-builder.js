@@ -11,6 +11,9 @@ export const SYSTEM_PROMPT = `あなたは Google Chrome の画面を操作す�
 - go_back: ブラウザの「戻る」を実行
 - go_forward: ブラウザの「進む」を実行
 - wait: 読み込みやアニメーション完了を待つ（必須: ms: 200〜5000）
+- open_tab: 作業用タブグループ内に新しいタブを開いて切り替える（必須: url ※複数タブ許可時のみ）
+- switch_tab: 作業用タブグループ内の指定タブ番号へ切り替える（必須: tabIndex ※複数タブ許可時のみ）
+- close_tab: 作業用タブグループ内の指定タブ（または現在タブ）を閉じる（任意: tabIndex ※複数タブ許可時のみ）
 - download_page_pdf: 現在のWeb画面をPDFとしてローカル保存し、自動で読み込む（任意: filename）
 - read_pdf: 読み込み済みのPDFから指定ページのテキストを取得する（任意: page ※デフォルト1）
 - ask_user: ログイン・CAPTCHA・判断に迷う場合にユーザーへ尋ねる（必須: message）
@@ -76,6 +79,7 @@ function formatHistory(history) {
       if (a.direction) detailParts.push(a.direction);
       if (a.key) detailParts.push(a.key);
       if (a.page) detailParts.push(`page=${a.page}`);
+      if (a.tabIndex) detailParts.push(`tab=${a.tabIndex}`);
       const status = item.result?.ok
         ? item.result?.promptNote
           ? `成功(${truncate(item.result.promptNote, 240)})`
@@ -97,7 +101,8 @@ export function buildStepPrompt({
   maxSteps = 15,
   hasImage = false,
   loopWarning = '',
-  pdfContext = null
+  pdfContext = null,
+  workspaceContext = null
 }) {
   const sections = [];
   sections.push(`# 目標\n${goal}`);
@@ -135,6 +140,15 @@ export function buildStepPrompt({
   }
 
   sections.push(`# 直近の操作履歴\n${formatHistory(history)}`);
+
+  if (workspaceContext && workspaceContext.multiTabEnabled && Array.isArray(workspaceContext.tabs) && workspaceContext.tabs.length > 0) {
+    const tabLines = workspaceContext.tabs
+      .map((t) => `- [${t.index}] ${t.isCurrent ? '(操作中) ' : ''}${truncate(t.title || '(無題)', 50)} | ${truncate(t.url || '', 72)}`)
+      .join('\n');
+    sections.push(
+      `# ワークスペースのタブ一覧 (グループ: ${workspaceContext.groupTitle || 'Nano AI'}${workspaceContext.backgroundMode ? ' / バックグラウンド実行中' : ''})\n${tabLines}`
+    );
+  }
 
   if (pdfContext && pdfContext.pageCount > 0) {
     const snippet = truncate(pdfContext.currentPageText || '', 1400);

@@ -8,6 +8,7 @@ import {
 } from '../shared/pdf-parser.js';
 import { SYSTEM_PROMPT } from '../shared/prompt-builder.js';
 import { TabWorkspaceManager } from '../shared/tab-workspace.js';
+import { compileWorkflowToPlaybook, validateWorkflowPreset } from '../shared/workflow-flow.js';
 
 const workspace = new TabWorkspaceManager(chrome);
 let creatingOffscreen = null;
@@ -824,6 +825,42 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             },
             workspace: ws
           });
+          break;
+        }
+        case MSG_TYPES.RUN_WORKFLOW_PRESET: {
+          const preset = validateWorkflowPreset(message.preset);
+          const compiledPlaybook = compileWorkflowToPlaybook(preset);
+          const stored = await chrome.storage.local.get('nano_cu_settings_v1').catch(() => ({}));
+          const settings = { ...DEFAULT_SETTINGS, ...(stored?.nano_cu_settings_v1 || {}), ...(message.settings || {}) };
+
+          let targetTab = null;
+          if (preset.startUrl) {
+            targetTab = await chrome.tabs.create({
+              url: preset.startUrl,
+              active: !settings.allowBackgroundExecution
+            });
+            await waitForTabComplete(targetTab.id, 10000);
+          } else {
+            const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            targetTab = active;
+          }
+
+          if (!targetTab?.id) {
+            sendResponse({ ok: false, error: '実行対象のタブが見つかりません。' });
+            break;
+          }
+
+          const goal =
+            compiledPlaybook.goal ||
+            `フローチャートプリセット「${preset.name}」の条件分岐とステップに従って実行してください。`;
+
+          const res = await startBackgroundRun({
+            tabId: targetTab.id,
+            goal,
+            settings,
+            initialPlaybook: compiledPlaybook
+          });
+          sendResponse(res);
           break;
         }
         default:

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nano Flow Studio - 条件分岐フローチャート設計</title>
+  <link rel="stylesheet" href="studio.css" />
+</head>
+<body>
+  <div class="studio-shell">
+    <header class="studio-topbar">
+      <div class="topbar-left">
+        <img src="../icons/icon48.png" alt="Logo" class="topbar-icon" />
+        <div class="topbar-brand">
+          <h1>Nano Flow Studio</h1>
+          <span class="topbar-sub">ローカル完結・ビジュアル条件分岐エディタ</span>
+        </div>
+        <input
+          id="studioPresetName"
+          type="text"
+          class="preset-name-input"
+          placeholder="プリセット名を入力"
+          aria-label="プリセット名"
+        />
+        <span id="studioSaveStatus" class="save-status">保存済み</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="previewPlaybookBtn" class="btn btn-secondary" type="button">AI手順書プレビュー</button>
+        <button id="exportJsonBtn" class="btn btn-secondary" type="button">JSON書出</button>
+        <button id="importJsonBtn" class="btn btn-secondary" type="button">JSON読込</button>
+        <input id="importJsonInput" type="file" accept=".json,application/json" class="hidden" />
+        <button id="savePresetBtn" class="btn btn-primary" type="button">ローカルに保存</button>
+        <button id="runPresetBtn" class="btn btn-run" type="button">このフローを実行</button>
+      </div>
+    </header>
+
+    <div class="studio-workspace">
+      <aside class="studio-sidebar">
+        <section class="sidebar-block">
+          <div class="sidebar-header">
+            <h2>ローカルプリセット</h2>
+            <div class="sidebar-mini-actions">
+              <button id="newPresetBtn" class="btn btn-xs btn-primary" type="button">+ 新規</button>
+              <button id="duplicatePresetBtn" class="btn btn-xs btn-secondary" type="button">複製</button>
+              <button id="deletePresetBtn" class="btn btn-xs btn-danger" type="button">削除</button>
+            </div>
+          </div>
+          <div id="presetList" class="preset-list"></div>
+        </section>
+
+        <section class="sidebar-block">
+          <div class="sidebar-header">
+            <h2>ノードを追加（ルート）</h2>
+          </div>
+          <div class="palette-grid">
+            <button class="palette-btn palette-action" data-add-type="action" type="button">
+              <span class="palette-badge">操作</span>
+              <span>操作ステップ (Action)</span>
+            </button>
+            <button class="palette-btn palette-condition" data-add-type="condition" type="button">
+              <span class="palette-badge">IF</span>
+              <span>条件分岐 (YES / NO)</span>
+            </button>
+            <button class="palette-btn palette-ask" data-add-type="ask_user" type="button">
+              <span class="palette-badge">確認</span>
+              <span>人間に確認 (Ask User)</span>
+            </button>
+            <button class="palette-btn palette-done" data-add-type="done" type="button">
+              <span class="palette-badge">完了</span>
+              <span>フロー完了 (Done)</span>
+            </button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="studio-canvas-area">
+        <div id="flowCanvas" class="flow-canvas"></div>
+      </main>
+
+      <aside class="studio-inspector">
+        <div class="inspector-header">
+          <h2 id="inspectorTitle">フロー全体設定</h2>
+        </div>
+        <div id="inspectorBody" class="inspector-body"></div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="playbookModal" class="modal hidden">
+    <div id="playbookModalBackdrop" class="modal-backdrop"></div>
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Gemini Nano 用 コンパイル済み手順書プレビュー</h3>
+        <button id="closePlaybookModalBtn" class="btn btn-xs btn-secondary" type="button">閉じる</button>
+      </div>
+      <pre id="compiledPlaybookPre" class="compiled-pre"></pre>
+    </div>
+  </div>
+
+  <script type="module" src="studio.js"></script>
+</body>
+</html>

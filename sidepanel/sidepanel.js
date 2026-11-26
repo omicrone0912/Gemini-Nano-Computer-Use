@@ -2,6 +2,7 @@ import { AgentController } from '../shared/agent-controller.js';
 import {
   CHROME_AI_FLAGS,
   DEFAULT_SETTINGS,
+  FLOW_PRESETS_STORAGE_KEY,
   MSG_TYPES
 } from '../shared/constants.js';
 import { NanoClient } from '../shared/nano-client.js';
@@ -21,6 +22,10 @@ import {
   PLAYBOOK_TEMPLATE_MARKDOWN,
   parsePlaybookContent
 } from '../shared/playbook.js';
+import {
+  WorkflowPresetStore,
+  compileWorkflowToPlaybook
+} from '../shared/workflow-flow.js';
 import { annotateScreenshot } from './annotator.js';
 
 const SETTINGS_STORAGE_KEY = 'nano_cu_settings_v1';
@@ -107,12 +112,28 @@ const els = {
   pdfCopyTextBtn: document.getElementById('pdfCopyTextBtn'),
   pdfExtractedText: document.getElementById('pdfExtractedText'),
   refreshRecentPdfBtn: document.getElementById('refreshRecentPdfBtn'),
-  recentPdfList: document.getElementById('recentPdfList')
+  recentPdfList: document.getElementById('recentPdfList'),
+  tabAgentBtn: document.getElementById('tabAgentBtn'),
+  tabFlowBtn: document.getElementById('tabFlowBtn'),
+  agentPanel: document.getElementById('agentPanel'),
+  flowPanel: document.getElementById('flowPanel'),
+  quickPresetSelect: document.getElementById('quickPresetSelect'),
+  quickApplyPresetBtn: document.getElementById('quickApplyPresetBtn'),
+  openStudioBtn: document.getElementById('openStudioBtn'),
+  refreshPresetsBtn: document.getElementById('refreshPresetsBtn'),
+  flowPresetList: document.getElementById('flowPresetList'),
+  flowPreviewCard: document.getElementById('flowPreviewCard'),
+  flowPreviewTitle: document.getElementById('flowPreviewTitle'),
+  flowPreviewEditBtn: document.getElementById('flowPreviewEditBtn'),
+  flowMiniDiagram: document.getElementById('flowMiniDiagram')
 };
 
 const nanoClient = new NanoClient(globalThis);
+const presetStore = new WorkflowPresetStore(chrome.storage?.local);
 const stepCards = new Map();
 const sessionPdfCache = new Map();
+let flowPresets = [];
+let selectedFlowPresetId = null;
 let activeController = null;
 let backgroundRunActive = false;
 let fgWorkspaceActive = false;
@@ -1386,10 +1407,233 @@ els.pdfCopyTextBtn.addEventListener('click', async () => {
 
 els.refreshRecentPdfBtn.addEventListener('click', refreshRecentPdfDownloads);
 
+// Flowchart & Local Preset Logic
+function switchMainTab(tabName) {
+  const isFlow = tabName === 'flow';
+  els.tabAgentBtn.classList.toggle('active', !isFlow);
+  els.tabFlowBtn.classList.toggle('active', isFlow);
+  els.agentPanel.classList.toggle('hidden', isFlow);
+  els.flowPanel.classList.toggle('hidden', !isFlow);
+  if (isFlow) {
+    loadFlowPresets();
+  }
+}
+
+function openStudioPage(presetId = '') {
+  const baseUrl = chrome.runtime.getURL('studio/studio.html');
+  const url = presetId ? `${baseUrl}?presetId=${encodeURIComponent(presetId)}` : baseUrl;
+  chrome.tabs.create({ url });
+}
+
+function applyPresetToPlaybook(preset, switchTab = true) {
+  if (!preset) return;
+  const compiled = compileWorkflowToPlaybook(preset);
+  loadedPlaybook = compiled;
+  renderLoadedPlaybookUi();
+  els.goalInput.value =
+    compiled.goal ||
+    `フローチャートプリセット「${preset.name}」の条件分岐とステップに従って実行してください。`;
+  els.quickPresetSelect.value = preset.id;
+  showPlaybookStatus(`プリセット「${preset.name}」を厳格手順書として適用しました。`, 'completed');
+  if (switchTab) {
+    switchMainTab('agent');
+  }
+}
+
+async function runPresetNow(preset) {
+  if (!preset) return;
+  applyPresetToPlaybook(preset, true);
+  if (preset.startUrl) {
+    const active = await getActiveTab().catch(() => null);
+    if (active?.id && (!active.url || active.url !== preset.startUrl)) {
+      await chrome.runtime.sendMessage({
+        type: MSG_TYPES.NAVIGATE_TAB,
+        tabId: active.id,
+        url: preset.startUrl
+      });
+    }
+  }
+  await startRun();
+}
+
+function renderMiniNodes(nodes, container) {
+  for (const node of nodes) {
+    const item = document.createElement('div');
+    item.className = `mini-node mini-node-${node.type}`;
+
+    const header = document.createElement('div');
+    const tag = node.type === 'condition' ? 'IF' : node.type === 'ask_user' ? '確認' : node.type === 'done' ? '完了' : node.actionType;
+    header.textContent = `[${tag}] ${node.label || ''}${node.conditionValue ? ` (${node.conditionValue})` : ''}`;
+    item.appendChild(header);
+
+    if (node.type === 'condition') {
+      const branches = document.createElement('div');
+      branches.className = 'mini-branches';
+
+      const yesBox = document.createElement('div');
+      yesBox.className = 'mini-branch mini-branch-yes';
+      const yesTitle = document.createElement('div');
+      yesTitle.className = 'mini-branch-title';
+      yesTitle.textContent = 'YES';
+      yesBox.appendChild(yesTitle);
+      if (node.yesBranch.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = '（次へ）';
+        yesBox.appendChild(empty);
+      } else {
+        renderMiniNodes(node.yesBranch, yesBox);
+      }
+
+      const noBox = document.createElement('div');
+      noBox.className = 'mini-branch mini-branch-no';
+      const noTitle = document.createElement('div');
+      noTitle.className = 'mini-branch-title';
+      noTitle.textContent = 'NO';
+      noBox.appendChild(noTitle);
+      if (node.noBranch.length === 0) {
+        const empty = document.createElement('div');
+        empty.textContent = '（次へ）';
+        noBox.appendChild(empty);
+      } else {
+        renderMiniNodes(node.noBranch, noBox);
+      }
+
+      branches.appendChild(yesBox);
+      branches.appendChild(noBox);
+      item.appendChild(branches);
+    }
+    container.appendChild(item);
+  }
+}
+
+function renderFlowPreview() {
+  const preset = flowPresets.find((p) => p.id === selectedFlowPresetId) || flowPresets[0];
+  if (!preset) {
+    els.flowPreviewCard.classList.add('hidden');
+    return;
+  }
+  selectedFlowPresetId = preset.id;
+  els.flowPreviewCard.classList.remove('hidden');
+  els.flowPreviewTitle.textContent = `プレビュー: ${preset.name}`;
+  els.flowMiniDiagram.innerHTML = '';
+  renderMiniNodes(preset.nodes, els.flowMiniDiagram);
+}
+
+function renderFlowPresetViews() {
+  const prevSelectVal = els.quickPresetSelect.value;
+  els.quickPresetSelect.innerHTML = '<option value="">（なし / 直接指示）</option>';
+  els.flowPresetList.innerHTML = '';
+
+  for (const preset of flowPresets) {
+    const opt = document.createElement('option');
+    opt.value = preset.id;
+    opt.textContent = preset.name;
+    els.quickPresetSelect.appendChild(opt);
+
+    const card = document.createElement('div');
+    card.className = `flow-preset-card${selectedFlowPresetId === preset.id ? ' selected' : ''}`;
+    card.addEventListener('click', () => {
+      selectedFlowPresetId = preset.id;
+      renderFlowPresetViews();
+    });
+
+    const title = document.createElement('div');
+    title.className = 'flow-preset-title';
+    title.textContent = preset.name;
+
+    const desc = document.createElement('div');
+    desc.className = 'flow-preset-desc';
+    desc.textContent =
+      preset.description || `${preset.nodes.length}ステップ${preset.startUrl ? ` ・ ${preset.startUrl}` : ''}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'flow-preset-actions';
+
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'btn btn-secondary btn-xs';
+    applyBtn.textContent = '呼出（適用）';
+    applyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applyPresetToPlaybook(preset, true);
+    });
+
+    const runBtn = document.createElement('button');
+    runBtn.type = 'button';
+    runBtn.className = 'btn btn-primary btn-xs';
+    runBtn.textContent = 'ワンクリック実行';
+    runBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      runPresetNow(preset);
+    });
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'btn btn-ghost btn-xs';
+    editBtn.textContent = 'Studio編集';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openStudioPage(preset.id);
+    });
+
+    actions.appendChild(applyBtn);
+    actions.appendChild(runBtn);
+    actions.appendChild(editBtn);
+
+    card.appendChild(title);
+    card.appendChild(desc);
+    card.appendChild(actions);
+    els.flowPresetList.appendChild(card);
+  }
+
+  if (prevSelectVal && flowPresets.some((p) => p.id === prevSelectVal)) {
+    els.quickPresetSelect.value = prevSelectVal;
+  }
+  renderFlowPreview();
+}
+
+async function loadFlowPresets() {
+  try {
+    flowPresets = await presetStore.list();
+    if (!selectedFlowPresetId && flowPresets[0]) {
+      selectedFlowPresetId = flowPresets[0].id;
+    }
+    renderFlowPresetViews();
+  } catch {
+    // Ignore preset load error
+  }
+}
+
+els.tabAgentBtn.addEventListener('click', () => switchMainTab('agent'));
+els.tabFlowBtn.addEventListener('click', () => switchMainTab('flow'));
+els.openStudioBtn.addEventListener('click', () => openStudioPage(selectedFlowPresetId || ''));
+els.flowPreviewEditBtn.addEventListener('click', () => openStudioPage(selectedFlowPresetId || ''));
+els.refreshPresetsBtn.addEventListener('click', loadFlowPresets);
+
+els.quickApplyPresetBtn.addEventListener('click', () => {
+  const id = els.quickPresetSelect.value;
+  if (!id) {
+    loadedPlaybook = null;
+    renderLoadedPlaybookUi();
+    return;
+  }
+  const preset = flowPresets.find((p) => p.id === id);
+  if (preset) {
+    applyPresetToPlaybook(preset, false);
+  }
+});
+
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes[FLOW_PRESETS_STORAGE_KEY]) {
+    loadFlowPresets();
+  }
+});
+
 // Boot
 renderSetupFlags();
 renderLoadedPlaybookUi();
 renderLoadedPdfUi();
 await loadSettings();
+await loadFlowPresets();
 await refreshAvailability();
 await restoreBackgroundRunState();

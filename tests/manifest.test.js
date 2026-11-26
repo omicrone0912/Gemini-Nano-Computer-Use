@@ -25,4 +25,9 @@ test('sidepanel.html and offscreen.html contain no inline styles or inline scrip
   assert.doesNotMatch(offscreenHtml, /\sstyle\s*=/i);
   assert.doesNotMatch(offscreenHtml, /<style[\s>]/i);
   assert.doesNotMatch(offscreenHtml, /<script(?![^>]*\bsrc=)[^>]*>/i);
+
+  const studioHtml = readFileSync('studio/studio.html', 'utf8');
+  assert.doesNotMatch(studioHtml, /\sstyle\s*=/i);
+  assert.doesNotMatch(studioHtml, /<style[\s>]/i);
+  assert.doesNotMatch(studioHtml, /<script(?![^>]*\bsrc=)[^>]*>/i);
 });

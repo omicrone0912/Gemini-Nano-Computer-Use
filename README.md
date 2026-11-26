@@ -29,6 +29,9 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
   - **Office 文書（`.docx` / `.pptx` / `.xlsx`）＆ 画像抽出対応**: Word・PowerPoint・Excel 等の手順書をアップロードすると、テキストとともに貼り付けられたスクリーンショット画像をローカルで抽出し、Gemini Nano が視覚的に参照しながら操作できます（`.md` / `.txt` / `.json` / `.pdf` にも対応）。
   - **Word (`.docx`) / Markdown テンプレートダウンロード**: スクリーンショットをそのまま貼り付けられる Word テンプレート（`gemini-nano-playbook-template.docx`）と Markdown テンプレート（`gemini-nano-playbook-template.md`）をワンクリックでダウンロードできます。
   - **厳格手順書モード**: 手順書が適用されている場合は手順書の記載通りに実行し、要素が見つからない・画面が異なる・判断に迷う不明点が出た場合は推測で進めず必ず `ask_user` で人間に指示を仰ぎます。
+- **フローチャート設計タブ & Nano Flow Studio（Google Workspace Studio 風エディタ）**
+  - **フロー設計タブ**: サイドパネル上の「フロー設計」タブでローカル保存済みプリセットを一覧・プレビューし、ワンクリックで適用（呼出）または即実行できます（AI 操作画面の上部セレクトからもワンクリック呼出可能）。
+  - **Studio 専用ページ (`studio/studio.html`)**: 「Studio で詳細設計（別ページ）」から開く 3 ペインのビジュアルフローチャートエディタで、操作ステップ・**IF / YES / NO 条件分岐**・人間への確認 (`ask_user`)・完了 (`done`) を組み立てて `chrome.storage.local` にプリセット保存／JSON エクスポートできます。
 
 ## プライバシー・ローカル完結設計（外部情報漏洩防止）
 
@@ -62,6 +65,10 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   ├── sidepanel.css             # スタイル（ライト/ダークモード対応）
 │   ├── sidepanel.js              # UI 制御とエージェント統合
 │   └── annotator.js              # Set-of-Mark 番号バッジ描画
+├── studio/
+│   ├── studio.html               # Google Workspace Studio 風ビジュアルフローエディタ
+│   ├── studio.css                # Studio スタイル（ドットグリッド＆分岐カード）
+│   └── studio.js                 # フロー編集・分岐管理・ローカルプリセット保存
 ├── shared/
 │   ├── constants.js              # アクション定義・デフォルト設定・Chrome フラグ情報
 │   ├── action-schema.js          # JSON Schema 定義 & アクションパーサー
@@ -71,6 +78,7 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   ├── pdf-parser.js             # 純粋 JS ローカル PDF 解析・テキスト抽出
 │   ├── office-parser.js          # 純粋 JS Office (.docx/.pptx/.xlsx) 画像抽出＆Wordテンプレ生成
 │   ├── playbook.js               # 手順書パーサー＆AI可読テンプレート定義
+│   ├── workflow-flow.js          # フローチャート分岐エンジン＆ローカルプリセットストア
 │   ├── tab-workspace.js          # 複数タブ＆タブグループ管理
 │   └── agent-controller.js       # Observe -> Think -> Guard -> Act 制御ループ
 ├── scripts/

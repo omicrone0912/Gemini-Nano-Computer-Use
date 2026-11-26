@@ -44,8 +44,20 @@
       </section>
     </header>
 
+    <nav class="main-tabs" aria-label="機能切り替え">
+      <button id="tabAgentBtn" class="main-tab-btn active" type="button">AI 操作</button>
+      <button id="tabFlowBtn" class="main-tab-btn" type="button">フロー設計</button>
+    </nav>
+
     <main class="main-content" id="agentPanel">
       <section class="composer-card">
+        <div class="preset-quick-row">
+          <span class="preset-quick-label">プリセット:</span>
+          <select id="quickPresetSelect" aria-label="ローカルプリセット選択">
+            <option value="">（なし / 直接指示）</option>
+          </select>
+          <button id="quickApplyPresetBtn" class="btn btn-secondary btn-xs" type="button">呼出</button>
+        </div>
         <label for="goalInput" class="field-label">AI に任せたい操作（目標）</label>
         <textarea
           id="goalInput"
@@ -245,6 +257,34 @@
         </div>
       </section>
     </main>
+
+    <section id="flowPanel" class="flow-panel hidden">
+      <section class="composer-card">
+        <div class="flow-studio-banner">
+          <div>
+            <h2>条件分岐フローチャート設計</h2>
+            <p class="subtitle">Google Workspace Studio 風の専用画面で IF / YES / NO 分岐を作成し、ローカルに保存できます。</p>
+          </div>
+          <button id="openStudioBtn" class="btn btn-primary" type="button">Studio で詳細設計（別ページ）</button>
+        </div>
+      </section>
+
+      <section class="composer-card">
+        <div class="timeline-header">
+          <h2>保存済みローカルプリセット</h2>
+          <button id="refreshPresetsBtn" class="btn btn-ghost btn-xs" type="button">更新</button>
+        </div>
+        <div id="flowPresetList" class="flow-preset-list"></div>
+      </section>
+
+      <section id="flowPreviewCard" class="composer-card hidden">
+        <div class="timeline-header">
+          <h2 id="flowPreviewTitle">フロープレビュー</h2>
+          <button id="flowPreviewEditBtn" class="btn btn-secondary btn-xs" type="button">Studioで編集</button>
+        </div>
+        <div id="flowMiniDiagram" class="flow-mini-diagram"></div>
+      </section>
+    </section>
   </div>
 
   <div id="imageModal" class="image-modal hidden">

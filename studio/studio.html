@@ -26,7 +26,8 @@
       </div>
 
       <div class="topbar-actions">
-        <button id="autoLayoutBtn" class="btn btn-secondary" type="button">自動整列</button>
+        <button id="undoBtn" class="btn btn-secondary" type="button" title="元に戻す (Ctrl+Z)" disabled>元に戻す</button>
+        <button id="autoLayoutBtn" class="btn btn-secondary" type="button" title="自動整列 (Ctrl+L)">自動整列</button>
         <button id="previewPlaybookBtn" class="btn btn-secondary" type="button">AI手順書プレビュー</button>
         <button id="exportJsonBtn" class="btn btn-secondary" type="button">JSON書出</button>
         <button id="importJsonBtn" class="btn btn-secondary" type="button">JSON読込</button>
@@ -78,11 +79,12 @@
 
       <main class="studio-canvas-area" id="canvasScrollArea">
         <div id="canvasStatusBar" class="canvas-status-bar">
-          ヒント: 左のノードをドラッグして設置 / ノード自体はドラッグで移動 / 下部の出力ポートをクリックしてから接続先ノードをクリックして接続（線クリックで切断）
+          ヒント: 左ノードをドラッグ設置 / 空き領域ドラッグで複数選択 / Ctrl+クリック2回で接続 / Ctrl+C,X,V,A,Z,S,L 対応
         </div>
         <div id="flowStage" class="flow-stage">
           <svg id="flowEdgesSvg" class="flow-edges-svg" xmlns="http://www.w3.org/2000/svg"></svg>
           <div id="flowNodesLayer" class="flow-nodes-layer"></div>
+          <div id="marqueeBox" class="marquee-box hidden"></div>
         </div>
       </main>
 

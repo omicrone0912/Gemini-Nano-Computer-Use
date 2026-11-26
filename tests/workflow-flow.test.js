@@ -7,6 +7,8 @@ import {
   buildPreviewStepsFromGraph,
   compileWorkflowToPlaybook,
   connectNodes,
+  connectNodesSmart,
+  copySubgraph,
   createDefaultPresets,
   createNode,
   disconnectEdge,
@@ -14,8 +16,11 @@ import {
   insertNodeAt,
   moveGraphNodePosition,
   moveNodeById,
+  pasteSubgraphAt,
   removeGraphNode,
+  removeMultipleGraphNodes,
   removeNodeById,
+  selectNodesInRect,
   updateNodeById,
   validateWorkflowPreset
 } from '../shared/workflow-flow.js';
@@ -173,4 +178,106 @@ test('validateWorkflowPreset migrates legacy tree presets and compileWorkflowToP
   const preview = buildPreviewStepsFromGraph(migrated);
   assert.equal(preview[0].type, 'condition');
   assert.equal(preview[0].yesBranch.length, 2);
+});
+
+test('copySubgraph and pasteSubgraphAt duplicate selected nodes and internal edges at cursor position', () => {
+  const start = createNode('start', { id: 'node_start', x: 400, y: 40 });
+  const a1 = createNode('action', { id: 'n_a1', label: 'A1', x: 200, y: 200 });
+  const a2 = createNode('action', { id: 'n_a2', label: 'A2', x: 300, y: 360 });
+  const outside = createNode('done', { id: 'n_done', x: 300, y: 520 });
+  const preset = validateWorkflowPreset({
+    id: 'copy_paste_test',
+    name: 'Copy Paste',
+    nodes: [start, a1, a2, outside],
+    edges: [
+      { id: 'e0', from: 'node_start', port: 'next', to: 'n_a1' },
+      { id: 'e1', from: 'n_a1', port: 'next', to: 'n_a2' },
+      { id: 'e2', from: 'n_a2', port: 'next', to: 'n_done' }
+    ]
+  });
+
+  // node_start must be excluded when copying
+  const clipboard = copySubgraph(preset, ['node_start', 'n_a1', 'n_a2']);
+  assert.equal(clipboard.nodes.length, 2);
+  assert.equal(clipboard.edges.length, 1);
+  assert.equal(clipboard.minX, 200);
+  assert.equal(clipboard.minY, 200);
+
+  const pastedIds = pasteSubgraphAt(preset, clipboard, 700, 100);
+  assert.equal(pastedIds.length, 2);
+  assert.equal(preset.nodes.length, 6);
+
+  const p1 = preset.nodes.find((n) => n.id === pastedIds[0]);
+  const p2 = preset.nodes.find((n) => n.id === pastedIds[1]);
+  assert.equal(p1.x, 700);
+  assert.equal(p1.y, 100);
+  assert.equal(p2.x, 800);
+  assert.equal(p2.y, 260);
+  assert.ok(preset.edges.some((e) => e.from === p1.id && e.to === p2.id));
+});
+
+test('removeMultipleGraphNodes removes multiple non-start nodes and cleans up connected edges', () => {
+  const start = createNode('start', { id: 'node_start', x: 400, y: 40 });
+  const n1 = createNode('action', { id: 'n1', x: 400, y: 180 });
+  const n2 = createNode('action', { id: 'n2', x: 400, y: 320 });
+  const preset = validateWorkflowPreset({
+    id: 'multi_del',
+    name: 'Multi Delete',
+    nodes: [start, n1, n2],
+    edges: [
+      { id: 'e1', from: 'node_start', port: 'next', to: 'n1' },
+      { id: 'e2', from: 'n1', port: 'next', to: 'n2' }
+    ]
+  });
+
+  const removed = removeMultipleGraphNodes(preset, ['node_start', 'n1', 'n2']);
+  assert.equal(removed, 2);
+  assert.equal(preset.nodes.length, 1);
+  assert.equal(preset.nodes[0].id, 'node_start');
+  assert.equal(preset.edges.length, 0);
+});
+
+test('connectNodesSmart assigns yes/no ports automatically on condition nodes and rejects invalid targets', () => {
+  const start = createNode('start', { id: 'node_start', x: 400, y: 40 });
+  const cond = createNode('condition', { id: 'n_cond', x: 400, y: 180 });
+  const yesNode = createNode('action', { id: 'n_yes', x: 240, y: 340 });
+  const noNode = createNode('done', { id: 'n_no', x: 560, y: 340 });
+  const preset = validateWorkflowPreset({
+    id: 'smart_connect',
+    name: 'Smart Connect',
+    nodes: [start, cond, yesNode, noNode],
+    edges: []
+  });
+
+  assert.equal(connectNodesSmart(preset, 'n_cond', 'n_cond').ok, false);
+  assert.equal(connectNodesSmart(preset, 'n_cond', 'node_start').ok, false);
+
+  const rStart = connectNodesSmart(preset, 'node_start', 'n_cond');
+  assert.equal(rStart.ok, true);
+  assert.equal(rStart.port, 'next');
+
+  const rYes = connectNodesSmart(preset, 'n_cond', 'n_yes');
+  assert.equal(rYes.ok, true);
+  assert.equal(rYes.port, 'yes');
+
+  const rNo = connectNodesSmart(preset, 'n_cond', 'n_no');
+  assert.equal(rNo.ok, true);
+  assert.equal(rNo.port, 'no');
+});
+
+test('selectNodesInRect detects intersecting nodes regardless of drag direction', () => {
+  const start = createNode('start', { id: 'node_start', x: 400, y: 40 });
+  const n1 = createNode('action', { id: 'n1', x: 100, y: 200 });
+  const n2 = createNode('action', { id: 'n2', x: 320, y: 220 });
+  const n3 = createNode('done', { id: 'n3', x: 900, y: 600 });
+  const preset = validateWorkflowPreset({
+    id: 'marquee_rect',
+    name: 'Marquee',
+    nodes: [start, n1, n2, n3],
+    edges: []
+  });
+
+  // Reverse drag rectangle overlapping n1 and n2
+  const hits = selectNodesInRect(preset, { x1: 420, y1: 300, x2: 180, y2: 210 });
+  assert.deepEqual(hits.sort(), ['n1', 'n2']);
 });

@@ -506,6 +506,161 @@ export function disconnectEdge(preset, edgeId) {
   return preset.edges.length !== prevLen;
 }
 
+export function copySubgraph(preset, selectedIds) {
+  if (!preset || !Array.isArray(preset.nodes)) {
+    return { nodes: [], edges: [], minX: 0, minY: 0 };
+  }
+  const requested = new Set(Array.isArray(selectedIds) ? selectedIds : selectedIds || []);
+  const copiedNodes = preset.nodes
+    .filter((node) => requested.has(node.id) && node.type !== 'start' && node.id !== 'node_start')
+    .map((node) => normalizeNode(JSON.parse(JSON.stringify(node))));
+
+  if (!copiedNodes.length) {
+    return { nodes: [], edges: [], minX: 0, minY: 0 };
+  }
+
+  const copiedIdSet = new Set(copiedNodes.map((n) => n.id));
+  const copiedEdges = (preset.edges || [])
+    .filter((e) => copiedIdSet.has(e.from) && copiedIdSet.has(e.to))
+    .map((e) => ({ ...e }));
+
+  const minX = Math.min(...copiedNodes.map((n) => Number(n.x) || 0));
+  const minY = Math.min(...copiedNodes.map((n) => Number(n.y) || 0));
+
+  return { nodes: copiedNodes, edges: copiedEdges, minX, minY };
+}
+
+export function pasteSubgraphAt(preset, clipboardData, targetX, targetY) {
+  if (!preset || !Array.isArray(preset.nodes) || !clipboardData || !Array.isArray(clipboardData.nodes) || !clipboardData.nodes.length) {
+    return [];
+  }
+  if (!Array.isArray(preset.edges)) preset.edges = [];
+
+  const baseMinX = Number.isFinite(clipboardData.minX)
+    ? clipboardData.minX
+    : Math.min(...clipboardData.nodes.map((n) => Number(n.x) || 0));
+  const baseMinY = Number.isFinite(clipboardData.minY)
+    ? clipboardData.minY
+    : Math.min(...clipboardData.nodes.map((n) => Number(n.y) || 0));
+  const destX = Number.isFinite(targetX) ? targetX : baseMinX + 40;
+  const destY = Number.isFinite(targetY) ? targetY : baseMinY + 40;
+
+  const idMap = new Map();
+  const pastedIds = [];
+
+  for (const srcNode of clipboardData.nodes) {
+    const newId = generateId('node');
+    idMap.set(srcNode.id, newId);
+    const cloned = JSON.parse(JSON.stringify(srcNode));
+    cloned.id = newId;
+    if (cloned.type === 'start') {
+      cloned.type = 'action';
+    }
+    cloned.x = Math.max(24, Math.round((Number(srcNode.x) || 0) - baseMinX + destX));
+    cloned.y = Math.max(24, Math.round((Number(srcNode.y) || 0) - baseMinY + destY));
+    const normalized = normalizeNode(cloned);
+    preset.nodes.push(normalized);
+    pastedIds.push(normalized.id);
+  }
+
+  for (const srcEdge of clipboardData.edges || []) {
+    const fromId = idMap.get(srcEdge.from);
+    const toId = idMap.get(srcEdge.to);
+    if (fromId && toId) {
+      connectNodes(preset, fromId, srcEdge.port || 'next', toId);
+    }
+  }
+
+  return pastedIds;
+}
+
+export function removeMultipleGraphNodes(preset, nodeIds) {
+  if (!preset || !Array.isArray(preset.nodes)) return 0;
+  const toDelete = new Set();
+  const list = Array.isArray(nodeIds) ? nodeIds : nodeIds || [];
+  for (const id of list) {
+    if (!id || id === 'node_start') continue;
+    const node = preset.nodes.find((n) => n.id === id);
+    if (node && node.type !== 'start') {
+      toDelete.add(id);
+    }
+  }
+  if (!toDelete.size) return 0;
+
+  const prevLen = preset.nodes.length;
+  preset.nodes = preset.nodes.filter((n) => !toDelete.has(n.id));
+  preset.edges = (preset.edges || []).filter((e) => !toDelete.has(e.from) && !toDelete.has(e.to));
+  return prevLen - preset.nodes.length;
+}
+
+export function connectNodesSmart(preset, fromId, toId) {
+  if (!preset || !Array.isArray(preset.nodes) || !fromId || !toId || fromId === toId) {
+    return { ok: false, reason: 'invalid' };
+  }
+  const fromNode = preset.nodes.find((n) => n.id === fromId);
+  const toNode = preset.nodes.find((n) => n.id === toId);
+  if (!fromNode || !toNode || toNode.type === 'start') {
+    return { ok: false, reason: 'invalid_target' };
+  }
+
+  let port = 'next';
+  if (fromNode.type === 'condition') {
+    const outgoing = (preset.edges || []).filter((e) => e.from === fromId);
+    const hasYes = outgoing.some((e) => e.port === 'yes');
+    const hasNo = outgoing.some((e) => e.port === 'no');
+    if (!hasYes) {
+      port = 'yes';
+    } else if (!hasNo) {
+      port = 'no';
+    } else {
+      port = 'yes';
+    }
+  }
+
+  const edge = connectNodes(preset, fromId, port, toId);
+  return { ok: Boolean(edge), port, edge };
+}
+
+export function selectNodesInRect(preset, rect, nodeSizeMap = null) {
+  if (!preset || !Array.isArray(preset.nodes) || !rect) return [];
+  let minX;
+  let maxX;
+  let minY;
+  let maxY;
+  if (Number.isFinite(rect.x1) && Number.isFinite(rect.x2)) {
+    minX = Math.min(rect.x1, rect.x2);
+    maxX = Math.max(rect.x1, rect.x2);
+    minY = Math.min(rect.y1 ?? 0, rect.y2 ?? 0);
+    maxY = Math.max(rect.y1 ?? 0, rect.y2 ?? 0);
+  } else {
+    const rx = Number(rect.x ?? rect.left ?? 0);
+    const ry = Number(rect.y ?? rect.top ?? 0);
+    const rw = Number(rect.width ?? 0);
+    const rh = Number(rect.height ?? 0);
+    minX = Math.min(rx, rx + rw);
+    maxX = Math.max(rx, rx + rw);
+    minY = Math.min(ry, ry + rh);
+    maxY = Math.max(ry, ry + rh);
+  }
+
+  const selected = [];
+  for (const node of preset.nodes) {
+    const size = nodeSizeMap
+      ? (nodeSizeMap instanceof Map ? nodeSizeMap.get(node.id) : nodeSizeMap[node.id])
+      : null;
+    const nw = Number(size?.width) || 240;
+    const nh = Number(size?.height) || 120;
+    const nx1 = Number(node.x) || 0;
+    const ny1 = Number(node.y) || 0;
+    const nx2 = nx1 + nw;
+    const ny2 = ny1 + nh;
+    if (nx1 <= maxX && nx2 >= minX && ny1 <= maxY && ny2 >= minY) {
+      selected.push(node.id);
+    }
+  }
+  return selected;
+}
+
 // --- Legacy Tree Manipulation Helpers (kept for compatibility) ---
 
 function walkNodeList(list, visitor) {

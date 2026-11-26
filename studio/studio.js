@@ -8,21 +8,28 @@ import {
   clonePreset,
   compileWorkflowToPlaybook,
   connectNodes,
+  connectNodesSmart,
+  copySubgraph,
   createNode,
   disconnectEdge,
   moveGraphNodePosition,
+  pasteSubgraphAt,
   removeGraphNode,
+  removeMultipleGraphNodes,
+  selectNodesInRect,
   updateGraphNode,
   validateWorkflowPreset
 } from '../shared/workflow-flow.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NODE_WIDTH = 240;
+const MAX_UNDO_HISTORY = 50;
 const store = new WorkflowPresetStore(chrome.storage?.local);
 
 const els = {
   studioPresetName: document.getElementById('studioPresetName'),
   studioSaveStatus: document.getElementById('studioSaveStatus'),
+  undoBtn: document.getElementById('undoBtn'),
   autoLayoutBtn: document.getElementById('autoLayoutBtn'),
   previewPlaybookBtn: document.getElementById('previewPlaybookBtn'),
   exportJsonBtn: document.getElementById('exportJsonBtn'),
@@ -39,6 +46,7 @@ const els = {
   flowStage: document.getElementById('flowStage'),
   flowEdgesSvg: document.getElementById('flowEdgesSvg'),
   flowNodesLayer: document.getElementById('flowNodesLayer'),
+  marqueeBox: document.getElementById('marqueeBox'),
   inspectorTitle: document.getElementById('inspectorTitle'),
   inspectorBody: document.getElementById('inspectorBody'),
   playbookModal: document.getElementById('playbookModal'),
@@ -49,10 +57,16 @@ const els = {
 
 let presets = [];
 let activePreset = null;
-let selectedNodeId = 'node_start';
+let selectedNodeIds = new Set(['node_start']);
+let primarySelectedNodeId = 'node_start';
 let connectingFrom = null; // { nodeId, port }
-let cursorPos = { x: 0, y: 0 };
+let cursorPos = { x: 480, y: 200 };
 let dragState = null;
+let marqueeState = null;
+let undoStack = [];
+let nodeClipboard = null;
+let suppressNextCardClick = false;
+let suppressNextStageClick = false;
 const nodeDomMap = new Map();
 
 function markDirty(dirty = true) {
@@ -60,15 +74,97 @@ function markDirty(dirty = true) {
   els.studioSaveStatus.classList.toggle('dirty', dirty);
 }
 
-function updateCanvasStatusBar() {
+function setSingleSelection(nodeId) {
+  selectedNodeIds = nodeId ? new Set([nodeId]) : new Set();
+  primarySelectedNodeId = nodeId || null;
+}
+
+function setMultiSelection(ids, primaryId = null) {
+  const list = Array.from(ids || []).filter(Boolean);
+  selectedNodeIds = new Set(list);
+  if (primaryId && selectedNodeIds.has(primaryId)) {
+    primarySelectedNodeId = primaryId;
+  } else {
+    primarySelectedNodeId = list[list.length - 1] || null;
+  }
+}
+
+function blurActiveTextInput() {
+  const active = document.activeElement;
+  if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) {
+    active.blur();
+  }
+}
+
+function updateUndoButtonState() {
+  if (els.undoBtn) {
+    els.undoBtn.disabled = undoStack.length === 0;
+  }
+}
+
+function resetUndoHistory() {
+  undoStack = [];
+  updateUndoButtonState();
+}
+
+function pushUndoSnapshot() {
+  if (!activePreset) return;
+  undoStack.push({
+    preset: clonePreset(activePreset),
+    selectedIds: Array.from(selectedNodeIds),
+    primaryId: primarySelectedNodeId
+  });
+  if (undoStack.length > MAX_UNDO_HISTORY) {
+    undoStack.shift();
+  }
+  updateUndoButtonState();
+}
+
+function performUndo() {
+  if (!undoStack.length) return false;
+  const snapshot = undoStack.pop();
+  activePreset = clonePreset(snapshot.preset);
+  const existingIds = new Set(activePreset.nodes.map((n) => n.id));
+  const restoredSelected = (snapshot.selectedIds || []).filter((id) => existingIds.has(id));
+  if (restoredSelected.length > 0) {
+    setMultiSelection(
+      restoredSelected,
+      existingIds.has(snapshot.primaryId) ? snapshot.primaryId : restoredSelected[0]
+    );
+  } else {
+    setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || activePreset.nodes[0]?.id || null);
+  }
+  connectingFrom = null;
+  markDirty(true);
+  updateUndoButtonState();
+  renderAll();
+  return true;
+}
+
+function updateCanvasStatusBar(customMessage = null) {
+  if (customMessage) {
+    els.canvasStatusBar.textContent = customMessage;
+    els.canvasStatusBar.classList.remove('connecting');
+    return;
+  }
   if (connectingFrom) {
     const srcNode = activePreset?.nodes.find((n) => n.id === connectingFrom.nodeId);
-    const portText = connectingFrom.port === 'yes' ? 'YES' : connectingFrom.port === 'no' ? 'NO' : '次へ';
+    const portText =
+      connectingFrom.port === 'yes'
+        ? 'YES'
+        : connectingFrom.port === 'no'
+          ? 'NO'
+          : connectingFrom.port === 'auto'
+            ? '自動ポート'
+            : '次へ';
     els.canvasStatusBar.textContent = `接続モード: 「${srcNode?.label || connectingFrom.nodeId}」(${portText}) の接続先ノードをクリックしてください（Esc または背景クリックでキャンセル）`;
     els.canvasStatusBar.classList.add('connecting');
+  } else if (selectedNodeIds.size > 1) {
+    els.canvasStatusBar.textContent = `${selectedNodeIds.size} 個のノードを選択中 — ドラッグでまとめて移動 / Ctrl+C:コピー / Ctrl+X:切り取り / Del:削除`;
+    els.canvasStatusBar.classList.remove('connecting');
   } else {
     els.canvasStatusBar.textContent =
-      'ヒント: 左のノードをドラッグして設置 / ノード自体はドラッグで移動 / 下部の出力ポートをクリックしてから接続先ノードをクリックして接続（線上のラベルクリックで切断）';
+      'ヒント: 左ノードをドラッグ設置 / 空き領域ドラッグで複数選択 / Ctrl+クリック2回で接続 / Ctrl+C,X,V,A,Z,S,L 対応';
     els.canvasStatusBar.classList.remove('connecting');
   }
 }
@@ -123,8 +219,9 @@ function renderPresetList() {
     btn.appendChild(metaEl);
     btn.addEventListener('click', () => {
       activePreset = clonePreset(preset);
-      selectedNodeId = activePreset.nodes.find((n) => n.type === 'start')?.id || activePreset.nodes[0]?.id || null;
+      setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || activePreset.nodes[0]?.id || null);
       connectingFrom = null;
+      resetUndoHistory();
       markDirty(false);
       renderAll();
     });
@@ -196,6 +293,7 @@ function renderEdgesSvg() {
     hit.setAttribute('class', 'edge-hit-area');
     hit.addEventListener('click', (e) => {
       e.stopPropagation();
+      pushUndoSnapshot();
       disconnectEdge(activePreset, edge.id);
       markDirty(true);
       renderEdgesSvg();
@@ -217,6 +315,7 @@ function renderEdgesSvg() {
     badgeGroup.setAttribute('class', 'edge-badge-group');
     badgeGroup.addEventListener('click', (e) => {
       e.stopPropagation();
+      pushUndoSnapshot();
       disconnectEdge(activePreset, edge.id);
       markDirty(true);
       renderEdgesSvg();
@@ -254,16 +353,34 @@ function renderEdgesSvg() {
   }
 }
 
+function syncSelectionClassesInDom() {
+  for (const [id, el] of nodeDomMap.entries()) {
+    el.classList.toggle('selected', selectedNodeIds.has(id));
+  }
+}
+
+function getCurrentNodeSizeMap() {
+  const sizeMap = new Map();
+  for (const [id, el] of nodeDomMap.entries()) {
+    sizeMap.set(id, {
+      width: el.offsetWidth || NODE_WIDTH,
+      height: el.offsetHeight || 120
+    });
+  }
+  return sizeMap;
+}
+
 function createGraphNodeElement(node) {
   const card = document.createElement('div');
+  const isSourceActive = Boolean(connectingFrom) && connectingFrom.nodeId === node.id;
   const isTargetReady =
     Boolean(connectingFrom) &&
     connectingFrom.nodeId !== node.id &&
     node.type !== 'start';
 
-  card.className = `graph-node graph-node-${node.type}${selectedNodeId === node.id ? ' selected' : ''}${
-    isTargetReady ? ' connect-target-ready' : ''
-  }`;
+  card.className = `graph-node graph-node-${node.type}${selectedNodeIds.has(node.id) ? ' selected' : ''}${
+    isSourceActive ? ' connect-source-active' : ''
+  }${isTargetReady ? ' connect-target-ready' : ''}`;
   // Direct CSSOM property assignment (no cssText / style attribute string) for strict CSP compliance
   card.style.left = `${node.x}px`;
   card.style.top = `${node.y}px`;
@@ -277,8 +394,14 @@ function createGraphNodeElement(node) {
     portInDot.title = '入力ポート（ここへ接続）';
     portInDot.addEventListener('click', (e) => {
       e.stopPropagation();
+      blurActiveTextInput();
       if (connectingFrom && connectingFrom.nodeId !== node.id) {
-        connectNodes(activePreset, connectingFrom.nodeId, connectingFrom.port, node.id);
+        pushUndoSnapshot();
+        if (connectingFrom.port === 'auto') {
+          connectNodesSmart(activePreset, connectingFrom.nodeId, node.id);
+        } else {
+          connectNodes(activePreset, connectingFrom.nodeId, connectingFrom.port, node.id);
+        }
         connectingFrom = null;
         markDirty(true);
         renderCanvas();
@@ -318,12 +441,17 @@ function createGraphNodeElement(node) {
     delBtn.title = '削除';
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      blurActiveTextInput();
       if (connectingFrom?.nodeId === node.id) {
         connectingFrom = null;
       }
+      pushUndoSnapshot();
       removeGraphNode(activePreset, node.id);
-      if (selectedNodeId === node.id) {
-        selectedNodeId = 'node_start';
+      selectedNodeIds.delete(node.id);
+      if (selectedNodeIds.size === 0) {
+        setSingleSelection('node_start');
+      } else if (primarySelectedNodeId === node.id) {
+        primarySelectedNodeId = Array.from(selectedNodeIds)[0];
       }
       markDirty(true);
       renderCanvas();
@@ -378,12 +506,59 @@ function createGraphNodeElement(node) {
     card.appendChild(portsOut);
   }
 
-  // Click to select OR finish connection
+  // Click to select, finish connection, or Ctrl+Click 1 & 2 connect
   card.addEventListener('click', (e) => {
     e.stopPropagation();
+    blurActiveTextInput();
+    if (suppressNextCardClick) {
+      suppressNextCardClick = false;
+      return;
+    }
+
+    const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+    if (isCtrlOrMeta) {
+      if (!connectingFrom) {
+        if (node.type === 'done') {
+          updateCanvasStatusBar('完了ノードからは接続元を開始できません。他のノードを Ctrl+クリックしてください。');
+          return;
+        }
+        connectingFrom = { nodeId: node.id, port: 'auto' };
+        const anchor = getPortAnchor(node.id, 'auto');
+        cursorPos = { x: anchor.x, y: anchor.y + 40 };
+        renderCanvas();
+        return;
+      }
+      if (connectingFrom.nodeId === node.id) {
+        connectingFrom = null;
+        renderCanvas();
+        return;
+      }
+      if (node.type === 'start') {
+        updateCanvasStatusBar('開始ノードは接続先にできません。別のノードを Ctrl+クリックしてください。');
+        return;
+      }
+      pushUndoSnapshot();
+      const result =
+        connectingFrom.port === 'auto'
+          ? connectNodesSmart(activePreset, connectingFrom.nodeId, node.id)
+          : { ok: Boolean(connectNodes(activePreset, connectingFrom.nodeId, connectingFrom.port, node.id)) };
+      connectingFrom = null;
+      if (result.ok) {
+        markDirty(true);
+        renderCanvas();
+        renderPresetList();
+      }
+      return;
+    }
+
     if (connectingFrom) {
       if (connectingFrom.nodeId !== node.id && node.type !== 'start') {
-        connectNodes(activePreset, connectingFrom.nodeId, connectingFrom.port, node.id);
+        pushUndoSnapshot();
+        if (connectingFrom.port === 'auto') {
+          connectNodesSmart(activePreset, connectingFrom.nodeId, node.id);
+        } else {
+          connectNodes(activePreset, connectingFrom.nodeId, connectingFrom.port, node.id);
+        }
         connectingFrom = null;
         markDirty(true);
         renderCanvas();
@@ -391,51 +566,95 @@ function createGraphNodeElement(node) {
         return;
       }
     }
-    selectedNodeId = node.id;
+
+    if (e.shiftKey) {
+      const nextSet = new Set(selectedNodeIds);
+      if (nextSet.has(node.id) && nextSet.size > 1) {
+        nextSet.delete(node.id);
+        setMultiSelection(nextSet);
+      } else {
+        nextSet.add(node.id);
+        setMultiSelection(nextSet, node.id);
+      }
+    } else {
+      setSingleSelection(node.id);
+    }
     renderCanvas();
     renderInspector();
   });
 
-  // Pointer drag to move node freely on stage
+  // Pointer drag to move single or multi-selected nodes freely on stage
   card.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (e.target.closest('button')) return;
     if (connectingFrom) return;
+    if (e.ctrlKey || e.metaKey) return;
 
     e.stopPropagation();
+    blurActiveTextInput();
+
+    if (!selectedNodeIds.has(node.id) && !e.shiftKey) {
+      setSingleSelection(node.id);
+      syncSelectionClassesInDom();
+      renderInspector();
+      updateCanvasStatusBar();
+    }
+
+    const dragIds = selectedNodeIds.has(node.id) ? Array.from(selectedNodeIds) : [node.id];
+    const items = dragIds
+      .map((id) => {
+        const targetNode = activePreset.nodes.find((n) => n.id === id);
+        const targetEl = nodeDomMap.get(id);
+        if (!targetNode || !targetEl) return null;
+        targetEl.classList.add('dragging');
+        return { id, origX: targetNode.x, origY: targetNode.y, el: targetEl };
+      })
+      .filter(Boolean);
+
     dragState = {
-      nodeId: node.id,
+      leadNodeId: node.id,
       cardEl: card,
       startPointerX: e.clientX,
       startPointerY: e.clientY,
-      origX: node.x,
-      origY: node.y,
-      moved: false
+      moved: false,
+      undoPushed: false,
+      items
     };
-    card.classList.add('dragging');
     card.setPointerCapture?.(e.pointerId);
   });
 
   card.addEventListener('pointermove', (e) => {
-    if (!dragState || dragState.nodeId !== node.id) return;
+    if (!dragState || dragState.leadNodeId !== node.id) return;
     const dx = e.clientX - dragState.startPointerX;
     const dy = e.clientY - dragState.startPointerY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+    if (!dragState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
       dragState.moved = true;
     }
-    const nextX = Math.max(20, Math.min(1220, Math.round((dragState.origX + dx) / 10) * 10));
-    const nextY = Math.max(20, Math.min(1040, Math.round((dragState.origY + dy) / 10) * 10));
-    moveGraphNodePosition(activePreset, node.id, nextX, nextY);
-    card.style.left = `${nextX}px`;
-    card.style.top = `${nextY}px`;
+    if (!dragState.moved) return;
+
+    if (!dragState.undoPushed) {
+      pushUndoSnapshot();
+      dragState.undoPushed = true;
+    }
+
+    for (const item of dragState.items) {
+      const nextX = Math.max(20, Math.min(1220, Math.round((item.origX + dx) / 10) * 10));
+      const nextY = Math.max(20, Math.min(1040, Math.round((item.origY + dy) / 10) * 10));
+      moveGraphNodePosition(activePreset, item.id, nextX, nextY);
+      item.el.style.left = `${nextX}px`;
+      item.el.style.top = `${nextY}px`;
+    }
     renderEdgesSvg();
   });
 
   card.addEventListener('pointerup', (e) => {
-    if (!dragState || dragState.nodeId !== node.id) return;
-    card.classList.remove('dragging');
+    if (!dragState || dragState.leadNodeId !== node.id) return;
+    for (const item of dragState.items) {
+      item.el.classList.remove('dragging');
+    }
     card.releasePointerCapture?.(e.pointerId);
     if (dragState.moved) {
+      suppressNextCardClick = true;
       markDirty(true);
     }
     dragState = null;
@@ -472,18 +691,140 @@ function addField(container, labelText, inputEl) {
   return wrap;
 }
 
+function attachInputUndo(inputEl) {
+  let pushedForFocus = false;
+  inputEl.addEventListener('focus', () => {
+    pushedForFocus = false;
+  });
+  return () => {
+    if (!pushedForFocus) {
+      pushUndoSnapshot();
+      pushedForFocus = true;
+    }
+  };
+}
+
+function copySelectedNodes() {
+  if (!activePreset) return 0;
+  const copied = copySubgraph(activePreset, Array.from(selectedNodeIds));
+  if (!copied.nodes.length) {
+    updateCanvasStatusBar('開始ノード以外のノードを選択してからコピーしてください。');
+    return 0;
+  }
+  nodeClipboard = copied;
+  updateCanvasStatusBar(`${copied.nodes.length} 個のノードをコピーしました（Ctrl+V でカーソル位置に貼り付け）`);
+  return copied.nodes.length;
+}
+
+function cutSelectedNodes() {
+  if (!activePreset) return 0;
+  const copied = copySubgraph(activePreset, Array.from(selectedNodeIds));
+  if (!copied.nodes.length) {
+    updateCanvasStatusBar('開始ノードは切り取りできません。別のノードを選択してください。');
+    return 0;
+  }
+  nodeClipboard = copied;
+  pushUndoSnapshot();
+  const removed = removeMultipleGraphNodes(activePreset, copied.nodes.map((n) => n.id));
+  if (removed > 0) {
+    setSingleSelection('node_start');
+    markDirty(true);
+    renderAll();
+    updateCanvasStatusBar(`${removed} 個のノードを切り取りました（Ctrl+V で貼り付け / Ctrl+Z で元に戻す）`);
+  }
+  return removed;
+}
+
+function pasteCopiedNodesAtCursor() {
+  if (!activePreset || !nodeClipboard?.nodes?.length) {
+    updateCanvasStatusBar('貼り付けるノードがありません（先に Ctrl+C または Ctrl+X でコピーしてください）。');
+    return 0;
+  }
+  pushUndoSnapshot();
+  const rawX = Number.isFinite(cursorPos.x) ? cursorPos.x - NODE_WIDTH / 2 : 480;
+  const rawY = Number.isFinite(cursorPos.y) ? cursorPos.y - 40 : 200;
+  const targetX = Math.max(20, Math.min(1220, Math.round(rawX / 10) * 10));
+  const targetY = Math.max(20, Math.min(1040, Math.round(rawY / 10) * 10));
+  const pastedIds = pasteSubgraphAt(activePreset, nodeClipboard, targetX, targetY);
+  if (pastedIds.length > 0) {
+    setMultiSelection(pastedIds);
+    markDirty(true);
+    renderAll();
+    updateCanvasStatusBar(`${pastedIds.length} 個のノードをカーソル位置に貼り付けました`);
+  }
+  return pastedIds.length;
+}
+
+function deleteSelectedNodes() {
+  if (!activePreset) return 0;
+  const deletable = Array.from(selectedNodeIds).filter((id) => {
+    const n = activePreset.nodes.find((node) => node.id === id);
+    return n && n.type !== 'start' && n.id !== 'node_start';
+  });
+  if (!deletable.length) return 0;
+  pushUndoSnapshot();
+  const removed = removeMultipleGraphNodes(activePreset, deletable);
+  if (removed > 0) {
+    setSingleSelection('node_start');
+    markDirty(true);
+    renderAll();
+    updateCanvasStatusBar(`${removed} 個のノードを削除しました（Ctrl+Z で元に戻す）`);
+  }
+  return removed;
+}
+
 function renderInspector() {
   els.inspectorBody.innerHTML = '';
   if (!activePreset) return;
 
-  const node = activePreset.nodes.find((n) => n.id === selectedNodeId);
+  if (selectedNodeIds.size > 1) {
+    els.inspectorTitle.textContent = `複数選択 (${selectedNodeIds.size}ノード)`;
+
+    const info = document.createElement('p');
+    info.className = 'inspector-help';
+    info.textContent =
+      '選択中のノードをドラッグでまとめて移動、または一括コピー・切り取り・削除できます（開始ノードは削除・コピー対象外です）。';
+    els.inspectorBody.appendChild(info);
+
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'inspector-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn btn-secondary btn-xs';
+    copyBtn.textContent = 'コピー (Ctrl+C)';
+    copyBtn.addEventListener('click', copySelectedNodes);
+
+    const cutBtn = document.createElement('button');
+    cutBtn.type = 'button';
+    cutBtn.className = 'btn btn-secondary btn-xs';
+    cutBtn.textContent = '切り取り (Ctrl+X)';
+    cutBtn.addEventListener('click', cutSelectedNodes);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn btn-danger btn-xs';
+    delBtn.textContent = '選択を削除 (Del)';
+    delBtn.addEventListener('click', deleteSelectedNodes);
+
+    actionsDiv.appendChild(copyBtn);
+    actionsDiv.appendChild(cutBtn);
+    actionsDiv.appendChild(delBtn);
+    els.inspectorBody.appendChild(actionsDiv);
+    return;
+  }
+
+  const targetId = primarySelectedNodeId || Array.from(selectedNodeIds)[0];
+  const node = activePreset.nodes.find((n) => n.id === targetId);
   if (!node || node.type === 'start') {
     els.inspectorTitle.textContent = 'フロー全体設定 (開始ノード)';
 
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
     nameInput.value = activePreset.name;
+    const ensureNameUndo = attachInputUndo(nameInput);
     nameInput.addEventListener('input', () => {
+      ensureNameUndo();
       activePreset.name = nameInput.value;
       els.studioPresetName.value = nameInput.value;
       markDirty(true);
@@ -495,7 +836,9 @@ function renderInspector() {
     urlInput.type = 'text';
     urlInput.placeholder = 'https://example.com';
     urlInput.value = activePreset.startUrl || '';
+    const ensureUrlUndo = attachInputUndo(urlInput);
     urlInput.addEventListener('input', () => {
+      ensureUrlUndo();
       activePreset.startUrl = urlInput.value.trim();
       markDirty(true);
       renderCanvas();
@@ -505,7 +848,9 @@ function renderInspector() {
     const descInput = document.createElement('textarea');
     descInput.value = activePreset.description || '';
     descInput.placeholder = 'このフローの目的や前提条件を記述してください';
+    const ensureDescUndo = attachInputUndo(descInput);
     descInput.addEventListener('input', () => {
+      ensureDescUndo();
       activePreset.description = descInput.value;
       markDirty(true);
     });
@@ -518,7 +863,9 @@ function renderInspector() {
   const labelInput = document.createElement('input');
   labelInput.type = 'text';
   labelInput.value = node.label || '';
+  const ensureLabelUndo = attachInputUndo(labelInput);
   labelInput.addEventListener('input', () => {
+    ensureLabelUndo();
     updateGraphNode(activePreset, node.id, { label: labelInput.value });
     markDirty(true);
     renderCanvas();
@@ -535,6 +882,7 @@ function renderInspector() {
       actionSel.appendChild(o);
     }
     actionSel.addEventListener('change', () => {
+      pushUndoSnapshot();
       updateGraphNode(activePreset, node.id, { actionType: actionSel.value });
       markDirty(true);
       renderCanvas();
@@ -547,7 +895,9 @@ function renderInspector() {
       urlInput.type = 'text';
       urlInput.placeholder = 'https://example.com';
       urlInput.value = node.url || '';
+      const ensureActionUrlUndo = attachInputUndo(urlInput);
       urlInput.addEventListener('input', () => {
+        ensureActionUrlUndo();
         updateGraphNode(activePreset, node.id, { url: urlInput.value });
         markDirty(true);
         renderCanvas();
@@ -560,7 +910,9 @@ function renderInspector() {
       targetInput.type = 'text';
       targetInput.placeholder = '例: ログインボタン / 検索入力欄';
       targetInput.value = node.target || '';
+      const ensureTargetUndo = attachInputUndo(targetInput);
       targetInput.addEventListener('input', () => {
+        ensureTargetUndo();
         updateGraphNode(activePreset, node.id, { target: targetInput.value });
         markDirty(true);
         renderCanvas();
@@ -573,7 +925,9 @@ function renderInspector() {
       valInput.type = 'text';
       valInput.placeholder = '入力文字 / ファイル名 / 方向 / ページ番号等';
       valInput.value = node.value || '';
+      const ensureValUndo = attachInputUndo(valInput);
       valInput.addEventListener('input', () => {
+        ensureValUndo();
         updateGraphNode(activePreset, node.id, { value: valInput.value });
         markDirty(true);
         renderCanvas();
@@ -587,7 +941,9 @@ function renderInspector() {
       msInput.min = '200';
       msInput.max = '5000';
       msInput.value = String(node.ms || 1000);
+      const ensureMsUndo = attachInputUndo(msInput);
       msInput.addEventListener('input', () => {
+        ensureMsUndo();
         updateGraphNode(activePreset, node.id, { ms: Number(msInput.value) || 1000 });
         markDirty(true);
         renderCanvas();
@@ -598,7 +954,9 @@ function renderInspector() {
     const notesInput = document.createElement('textarea');
     notesInput.value = node.notes || '';
     notesInput.placeholder = 'AI への補足条件や注意点';
+    const ensureNotesUndo = attachInputUndo(notesInput);
     notesInput.addEventListener('input', () => {
+      ensureNotesUndo();
       updateGraphNode(activePreset, node.id, { notes: notesInput.value });
       markDirty(true);
     });
@@ -613,6 +971,7 @@ function renderInspector() {
       condSel.appendChild(o);
     }
     condSel.addEventListener('change', () => {
+      pushUndoSnapshot();
       updateGraphNode(activePreset, node.id, { conditionType: condSel.value });
       markDirty(true);
       renderCanvas();
@@ -623,7 +982,9 @@ function renderInspector() {
     condValInput.type = 'text';
     condValInput.placeholder = '例: ログイン / /error / 購入ボタン';
     condValInput.value = node.conditionValue || '';
+    const ensureCondValUndo = attachInputUndo(condValInput);
     condValInput.addEventListener('input', () => {
+      ensureCondValUndo();
       updateGraphNode(activePreset, node.id, { conditionValue: condValInput.value });
       markDirty(true);
       renderCanvas();
@@ -632,7 +993,9 @@ function renderInspector() {
   } else {
     const msgInput = document.createElement('textarea');
     msgInput.value = node.message || '';
+    const ensureMsgUndo = attachInputUndo(msgInput);
     msgInput.addEventListener('input', () => {
+      ensureMsgUndo();
       updateGraphNode(activePreset, node.id, { message: msgInput.value });
       markDirty(true);
       renderCanvas();
@@ -648,8 +1011,9 @@ function renderInspector() {
   delBtn.className = 'btn btn-danger btn-xs';
   delBtn.textContent = 'このノードを削除';
   delBtn.addEventListener('click', () => {
+    pushUndoSnapshot();
     removeGraphNode(activePreset, node.id);
-    selectedNodeId = 'node_start';
+    setSingleSelection('node_start');
     markDirty(true);
     renderCanvas();
     renderInspector();
@@ -677,7 +1041,9 @@ async function saveCurrentPreset() {
 
 function addNodeAndMaybeAutoConnect(type, dropX = null, dropY = null) {
   if (!activePreset) return;
-  const baseNode = activePreset.nodes.find((n) => n.id === selectedNodeId) || activePreset.nodes[0];
+  pushUndoSnapshot();
+  const baseId = primarySelectedNodeId || Array.from(selectedNodeIds)[0];
+  const baseNode = activePreset.nodes.find((n) => n.id === baseId) || activePreset.nodes[0];
   const x = dropX !== null ? dropX : (baseNode?.x ?? 460);
   const y = dropY !== null ? dropY : (baseNode?.y ?? 40) + 170;
 
@@ -698,35 +1064,201 @@ function addNodeAndMaybeAutoConnect(type, dropX = null, dropY = null) {
     }
   }
 
-  selectedNodeId = created.id;
+  setSingleSelection(created.id);
   markDirty(true);
   renderCanvas();
   renderInspector();
   renderPresetList();
 }
 
-// Stage mouse tracking for live preview connection wire & drag-drop placement
-els.flowStage.addEventListener('mousemove', (e) => {
-  if (!connectingFrom) return;
+function getStageCoordinates(clientX, clientY) {
   const rect = els.flowStage.getBoundingClientRect();
-  cursorPos = {
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top
+  return {
+    x: Math.max(0, Math.min(els.flowStage.offsetWidth || 1600, clientX - rect.left)),
+    y: Math.max(0, Math.min(els.flowStage.offsetHeight || 1200, clientY - rect.top))
   };
-  renderEdgesSvg();
-});
+}
 
-els.flowStage.addEventListener('click', () => {
+// Always track stage mouse cursor for Ctrl+V paste & live preview wire
+els.flowStage.addEventListener('mousemove', (e) => {
+  cursorPos = getStageCoordinates(e.clientX, e.clientY);
   if (connectingFrom) {
-    connectingFrom = null;
-    renderCanvas();
+    renderEdgesSvg();
   }
 });
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && connectingFrom) {
+// Drag marquee multi-selection on empty stage background
+els.flowStage.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  if (e.target.closest('.graph-node') || e.target.closest('.edge-badge-group') || e.target.closest('.edge-hit-area')) {
+    return;
+  }
+  blurActiveTextInput();
+  if (connectingFrom) return;
+
+  const pos = getStageCoordinates(e.clientX, e.clientY);
+  cursorPos = pos;
+  marqueeState = {
+    startX: pos.x,
+    startY: pos.y,
+    curX: pos.x,
+    curY: pos.y,
+    moved: false,
+    additive: e.shiftKey,
+    baseSelected: new Set(selectedNodeIds)
+  };
+  els.flowStage.setPointerCapture?.(e.pointerId);
+});
+
+els.flowStage.addEventListener('pointermove', (e) => {
+  cursorPos = getStageCoordinates(e.clientX, e.clientY);
+  if (!marqueeState || !activePreset) return;
+
+  marqueeState.curX = cursorPos.x;
+  marqueeState.curY = cursorPos.y;
+  const dx = marqueeState.curX - marqueeState.startX;
+  const dy = marqueeState.curY - marqueeState.startY;
+  if (!marqueeState.moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+    marqueeState.moved = true;
+    els.marqueeBox.classList.remove('hidden');
+  }
+  if (!marqueeState.moved) return;
+
+  const left = Math.min(marqueeState.startX, marqueeState.curX);
+  const top = Math.min(marqueeState.startY, marqueeState.curY);
+  const width = Math.abs(dx);
+  const height = Math.abs(dy);
+
+  // Direct CSSOM positioning (strict CSP compliant)
+  els.marqueeBox.style.left = `${left}px`;
+  els.marqueeBox.style.top = `${top}px`;
+  els.marqueeBox.style.width = `${width}px`;
+  els.marqueeBox.style.height = `${height}px`;
+
+  const hitIds = selectNodesInRect(
+    activePreset,
+    { x1: left, y1: top, x2: left + width, y2: top + height },
+    getCurrentNodeSizeMap()
+  );
+  const nextSelection = marqueeState.additive ? new Set([...marqueeState.baseSelected, ...hitIds]) : new Set(hitIds);
+  setMultiSelection(nextSelection);
+  syncSelectionClassesInDom();
+  updateCanvasStatusBar();
+});
+
+function finishMarquee(e) {
+  if (!marqueeState) return;
+  const hadDrag = marqueeState.moved;
+  els.marqueeBox.classList.add('hidden');
+  els.flowStage.releasePointerCapture?.(e.pointerId);
+  marqueeState = null;
+  if (hadDrag) {
+    suppressNextStageClick = true;
+    renderInspector();
+    updateCanvasStatusBar();
+  }
+}
+
+els.flowStage.addEventListener('pointerup', finishMarquee);
+els.flowStage.addEventListener('pointercancel', finishMarquee);
+
+els.flowStage.addEventListener('click', () => {
+  blurActiveTextInput();
+  if (suppressNextStageClick) {
+    suppressNextStageClick = false;
+    return;
+  }
+  if (connectingFrom) {
     connectingFrom = null;
     renderCanvas();
+    return;
+  }
+  if (activePreset && selectedNodeIds.size > 0) {
+    setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start');
+    renderCanvas();
+    renderInspector();
+  }
+});
+
+function runAutoLayout() {
+  if (!activePreset) return;
+  pushUndoSnapshot();
+  autoLayoutGraph(activePreset);
+  markDirty(true);
+  renderCanvas();
+  updateCanvasStatusBar('ノードを自動整列しました（Ctrl+Z で元に戻す）');
+}
+
+document.addEventListener('keydown', (e) => {
+  const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+  const key = (e.key || '').toLowerCase();
+  const activeEl = document.activeElement;
+  const isTypingField =
+    Boolean(activeEl) &&
+    (['INPUT', 'TEXTAREA', 'SELECT'].includes(activeEl.tagName) || activeEl.isContentEditable);
+
+  if (key === 'escape') {
+    if (!els.playbookModal.classList.contains('hidden')) {
+      els.playbookModal.classList.add('hidden');
+      return;
+    }
+    if (connectingFrom) {
+      connectingFrom = null;
+      renderCanvas();
+      return;
+    }
+  }
+
+  // Global save & auto-layout shortcuts work even when focus is in inspector inputs
+  if (isCtrlOrMeta && key === 's') {
+    e.preventDefault();
+    saveCurrentPreset();
+    return;
+  }
+  if (isCtrlOrMeta && key === 'l') {
+    e.preventDefault();
+    runAutoLayout();
+    return;
+  }
+
+  // Keep native text editing shortcuts intact when typing inside inputs/textareas
+  if (isTypingField) return;
+
+  if (isCtrlOrMeta && key === 'c') {
+    e.preventDefault();
+    copySelectedNodes();
+    return;
+  }
+  if (isCtrlOrMeta && key === 'x') {
+    e.preventDefault();
+    cutSelectedNodes();
+    return;
+  }
+  if (isCtrlOrMeta && key === 'v') {
+    e.preventDefault();
+    pasteCopiedNodesAtCursor();
+    return;
+  }
+  if (isCtrlOrMeta && key === 'a') {
+    e.preventDefault();
+    if (!activePreset) return;
+    setMultiSelection(activePreset.nodes.map((n) => n.id));
+    renderCanvas();
+    renderInspector();
+    return;
+  }
+  if (isCtrlOrMeta && key === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    if (!performUndo()) {
+      updateCanvasStatusBar('これ以上戻せる操作履歴はありません。');
+    }
+    return;
+  }
+  if (key === 'delete' || key === 'backspace') {
+    if (selectedNodeIds.size > 0) {
+      e.preventDefault();
+      deleteSelectedNodes();
+    }
   }
 });
 
@@ -770,22 +1302,23 @@ els.flowStage.addEventListener('drop', (e) => {
 });
 
 // Topbar & Sidebar Events
+const ensureTopNameUndo = attachInputUndo(els.studioPresetName);
 els.studioPresetName.addEventListener('input', () => {
   if (!activePreset) return;
+  ensureTopNameUndo();
   activePreset.name = els.studioPresetName.value;
   markDirty(true);
   renderCanvas();
-  if (selectedNodeId === 'node_start') {
+  if (selectedNodeIds.size === 1 && selectedNodeIds.has('node_start')) {
     renderInspector();
   }
 });
 
-els.autoLayoutBtn.addEventListener('click', () => {
-  if (!activePreset) return;
-  autoLayoutGraph(activePreset);
-  markDirty(true);
-  renderCanvas();
+els.undoBtn.addEventListener('click', () => {
+  performUndo();
 });
+
+els.autoLayoutBtn.addEventListener('click', runAutoLayout);
 
 els.savePresetBtn.addEventListener('click', saveCurrentPreset);
 
@@ -840,8 +1373,9 @@ els.importJsonInput.addEventListener('change', async (e) => {
     });
     activePreset = await store.save(validated);
     presets = await store.list();
-    selectedNodeId = activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start';
+    setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start');
     connectingFrom = null;
+    resetUndoHistory();
     markDirty(false);
     renderAll();
   } catch (error) {
@@ -866,8 +1400,9 @@ els.newPresetBtn.addEventListener('click', async () => {
   });
   activePreset = await store.save(fresh);
   presets = await store.list();
-  selectedNodeId = startNode.id;
+  setSingleSelection(startNode.id);
   connectingFrom = null;
+  resetUndoHistory();
   markDirty(false);
   renderAll();
 });
@@ -881,8 +1416,9 @@ els.duplicatePresetBtn.addEventListener('click', async () => {
   });
   activePreset = await store.save(copy);
   presets = await store.list();
-  selectedNodeId = activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start';
+  setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start');
   connectingFrom = null;
+  resetUndoHistory();
   markDirty(false);
   renderAll();
 });
@@ -894,8 +1430,9 @@ els.deletePresetBtn.addEventListener('click', async () => {
     presets = await store.seedIfEmpty();
   }
   activePreset = clonePreset(presets[0]);
-  selectedNodeId = activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start';
+  setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start');
   connectingFrom = null;
+  resetUndoHistory();
   markDirty(false);
   renderAll();
 });
@@ -906,6 +1443,7 @@ const params = new URLSearchParams(location.search);
 const requestedId = params.get('presetId');
 const initial = (requestedId && presets.find((p) => p.id === requestedId)) || presets[0];
 activePreset = clonePreset(initial);
-selectedNodeId = activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start';
+setSingleSelection(activePreset.nodes.find((n) => n.type === 'start')?.id || 'node_start');
+resetUndoHistory();
 markDirty(false);
 renderAll();

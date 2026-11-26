@@ -404,10 +404,24 @@ body {
   box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.22);
 }
 
+.graph-node.connect-source-active {
+  border-color: #f9ab00;
+  box-shadow: 0 0 0 3px rgba(249, 171, 0, 0.28);
+}
+
 .graph-node.connect-target-ready {
   border-color: var(--primary);
   border-style: dashed;
   cursor: crosshair;
+}
+
+.marquee-box {
+  position: absolute;
+  border: 1.5px dashed var(--primary);
+  background: rgba(26, 115, 232, 0.12);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 40;
 }
 
 .graph-node.connect-target-ready:hover {

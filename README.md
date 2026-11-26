@@ -25,6 +25,9 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 - **バックグラウンド実行 & 複数タブ作業（タブグループ自動作成）**
   - **バックグラウンド実行**: Offscreen Document (`offscreen/offscreen.html`) と Service Worker を連携させ、サイドパネルを閉じたり別タブを閲覧している間もタスクを継続実行できます（ツールバーアイコンに進捗バッジを表示し、サイドパネルを再開すると状態・履歴を再同期）。
   - **複数タブ作業と自動タブグループ化**: 複数タブでの作業を許可すると、Chrome のタブグループ（既定: `Nano AI`）を自動作成し、新規タブ (`open_tab`)・タブ切替 (`switch_tab`)・タブ終了 (`close_tab`)・リンクから開いた子タブをすべて同じタブグループ内で完結して管理します。
+- **手順書（SOP）アップロード ＆ AI 可読テンプレートダウンロード**
+  - **手順書アップロード**: `.md` / `.txt` / `.json` / `.pdf` 形式の手順書をアップロード（またはドラッグ＆ドロップ）すると、各ステップの Gemini Nano プロンプトへ自動組み込みされ、手順書に沿った操作を実行できます。
+  - **テンプレートダウンロード**: Gemini Nano が誤解なく読み取れる構造化セクション（目的・開始URL・前提ルール・`[action]` ヒント付きステップ・完了条件）を備えたテンプレート（`gemini-nano-playbook-template.md`）をワンクリックでダウンロードできます。
 
 ## プライバシー・ローカル完結設計（外部情報漏洩防止）
 
@@ -65,6 +68,7 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   ├── prompt-builder.js         # システム/ステッププロンプト生成
 │   ├── nano-client.js            # Chrome Prompt API (Gemini Nano) ラッパー
 │   ├── pdf-parser.js             # 純粋 JS ローカル PDF 解析・テキスト抽出
+│   ├── playbook.js               # 手順書パーサー＆AI可読テンプレート定義
 │   ├── tab-workspace.js          # 複数タブ＆タブグループ管理
 │   └── agent-controller.js       # Observe -> Think -> Guard -> Act 制御ループ
 ├── scripts/

@@ -215,3 +215,39 @@ test('AgentController blocks multi-tab actions when allowMultiTab is false', asy
   assert.equal(executedCount, 0);
   assert.equal(outcome.history[0].result.blocked, true);
 });
+
+test('AgentController passes playbookContext from observe to buildStepPrompt', async () => {
+  const promptsSeen = [];
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction({ promptText }) {
+        promptsSeen.push(promptText);
+        return { action: { thought: '完了', action: 'done', message: '手順書通り完了' }, usage: {} };
+      }
+    },
+    async observe() {
+      return {
+        snapshot: { restricted: false, url: 'https://example.com', elements: [] },
+        playbookContext: {
+          title: '申請手順',
+          filename: 'apply.md',
+          rawText: '## 実行ステップ\n1. [done] 完了する'
+        }
+      };
+    },
+    async executeAction() {
+      return { ok: true };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '手順書実行',
+    settings: { maxSteps: 2, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'completed');
+  assert.match(promptsSeen[0], /# 適用中の手順書 \(申請手順\)/);
+});

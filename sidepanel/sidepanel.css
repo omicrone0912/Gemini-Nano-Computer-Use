@@ -667,6 +667,21 @@ textarea {
   gap: 6px;
 }
 
+.playbook-preview-text {
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .pdf-primary-actions {
   display: flex;
   gap: 8px;

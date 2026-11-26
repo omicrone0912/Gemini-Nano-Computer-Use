@@ -11,6 +11,11 @@ import {
   parsePdfBytes,
   uint8ArrayToBase64
 } from '../shared/pdf-parser.js';
+import {
+  PLAYBOOK_TEMPLATE_FILENAME,
+  PLAYBOOK_TEMPLATE_MARKDOWN,
+  parsePlaybookContent
+} from '../shared/playbook.js';
 import { annotateScreenshot } from './annotator.js';
 
 const SETTINGS_STORAGE_KEY = 'nano_cu_settings_v1';
@@ -56,6 +61,19 @@ const els = {
   imageModalBackdrop: document.getElementById('imageModalBackdrop'),
   closeImageModalBtn: document.getElementById('closeImageModalBtn'),
   modalPreviewImg: document.getElementById('modalPreviewImg'),
+  playbookSection: document.getElementById('playbookSection'),
+  playbookSummaryBadge: document.getElementById('playbookSummaryBadge'),
+  uploadPlaybookBtn: document.getElementById('uploadPlaybookBtn'),
+  downloadPlaybookTemplateBtn: document.getElementById('downloadPlaybookTemplateBtn'),
+  playbookFileInput: document.getElementById('playbookFileInput'),
+  playbookDropZone: document.getElementById('playbookDropZone'),
+  playbookStatusBanner: document.getElementById('playbookStatusBanner'),
+  playbookMetaCard: document.getElementById('playbookMetaCard'),
+  playbookMetaTitle: document.getElementById('playbookMetaTitle'),
+  clearPlaybookBtn: document.getElementById('clearPlaybookBtn'),
+  playbookMetaStats: document.getElementById('playbookMetaStats'),
+  applyPlaybookGoalBtn: document.getElementById('applyPlaybookGoalBtn'),
+  playbookPreviewText: document.getElementById('playbookPreviewText'),
   pdfSection: document.getElementById('pdfSection'),
   pdfSummaryBadge: document.getElementById('pdfSummaryBadge'),
   capturePagePdfBtn: document.getElementById('capturePagePdfBtn'),
@@ -94,6 +112,7 @@ let fgWorkspaceActive = false;
 let activeBgConfirmCleanup = null;
 let availabilityState = null;
 let loadedPdf = null;
+let loadedPlaybook = null;
 let pdfShowAllPages = false;
 
 function renderSetupFlags() {
@@ -288,7 +307,15 @@ async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
   }
 
   const pdfContext = getLoadedPdfContext();
-  return { tab, snapshot, image, previewDataUrl, pdfContext, workspaceContext };
+  return {
+    tab,
+    snapshot,
+    image,
+    previewDataUrl,
+    pdfContext,
+    workspaceContext,
+    playbookContext: loadedPlaybook
+  };
 }
 
 function formatByteSize(bytes) {
@@ -831,10 +858,16 @@ function setRunningUi(isRunning) {
 }
 
 async function startRun() {
-  const goal = els.goalInput.value.trim();
+  let goal = els.goalInput.value.trim();
+  if (!goal && loadedPlaybook) {
+    goal = loadedPlaybook.goal
+      ? `${loadedPlaybook.goal}\n（適用手順書「${loadedPlaybook.title}」に従って実行してください）`
+      : `アップロードされた手順書「${loadedPlaybook.title}」の実行ステップと完了条件に従って操作を実行してください。`;
+    els.goalInput.value = goal;
+  }
   if (!goal) {
     els.resultBanner.className = 'result-banner error';
-    els.resultBanner.textContent = 'AI に実行させたいタスクを入力してください。';
+    els.resultBanner.textContent = 'AI に実行させたいタスクを入力するか、手順書をアップロードしてください。';
     els.resultBanner.classList.remove('hidden');
     return;
   }
@@ -861,7 +894,8 @@ async function startRun() {
       tabId: tab.id,
       goal,
       settings,
-      initialPdf
+      initialPdf,
+      initialPlaybook: loadedPlaybook
     });
 
     if (bgRes?.ok) {
@@ -1005,6 +1039,11 @@ async function restoreBackgroundRunState() {
       }
     }
 
+    if (state.loadedPlaybook) {
+      loadedPlaybook = state.loadedPlaybook;
+      renderLoadedPlaybookUi();
+    }
+
     if (state.running || (Array.isArray(state.events) && state.events.length > 0)) {
       if (state.goal && !els.goalInput.value.trim()) {
         els.goalInput.value = state.goal;
@@ -1025,6 +1064,131 @@ async function restoreBackgroundRunState() {
 
 els.closeImageModalBtn.addEventListener('click', () => els.imageModal.classList.add('hidden'));
 els.imageModalBackdrop.addEventListener('click', () => els.imageModal.classList.add('hidden'));
+
+function showPlaybookStatus(message, kind = 'completed') {
+  if (!message) {
+    els.playbookStatusBanner.classList.add('hidden');
+    return;
+  }
+  els.playbookStatusBanner.className = `result-banner ${kind}`;
+  els.playbookStatusBanner.textContent = message;
+  els.playbookStatusBanner.classList.remove('hidden');
+}
+
+function renderLoadedPlaybookUi() {
+  if (!loadedPlaybook) {
+    els.playbookSummaryBadge.textContent = '未設定';
+    els.playbookSummaryBadge.classList.remove('loaded');
+    els.playbookMetaCard.classList.add('hidden');
+    els.playbookPreviewText.textContent = '';
+    return;
+  }
+
+  els.playbookSummaryBadge.textContent = loadedPlaybook.title || loadedPlaybook.filename;
+  els.playbookSummaryBadge.classList.add('loaded');
+  els.playbookMetaCard.classList.remove('hidden');
+  els.playbookMetaTitle.textContent = `${loadedPlaybook.title} (${loadedPlaybook.filename})`;
+  els.playbookMetaStats.textContent = `抽出ステップ ${loadedPlaybook.steps.length}件 ・ ${loadedPlaybook.charCount}文字${
+    loadedPlaybook.startUrl ? ` ・ 開始URL: ${loadedPlaybook.startUrl}` : ''
+  }`;
+  els.playbookPreviewText.textContent = loadedPlaybook.rawText;
+}
+
+async function handlePlaybookFile(file) {
+  if (!file) return;
+  let rawText = '';
+  if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+    const buf = await file.arrayBuffer();
+    const parsedPdf = await parsePdfBytes(new Uint8Array(buf));
+    if (!parsedPdf.hasExtractableText) {
+      throw new Error('この PDF からは手順テキストを抽出できませんでした。Markdown (.md) またはテキスト形式をご利用ください。');
+    }
+    rawText = parsedPdf.fullText;
+  } else {
+    rawText = await file.text();
+  }
+
+  loadedPlaybook = parsePlaybookContent(rawText, file.name);
+  els.playbookSection.open = true;
+  renderLoadedPlaybookUi();
+  showPlaybookStatus(`手順書「${loadedPlaybook.title}」を読み込みました。`, 'completed');
+}
+
+async function downloadPlaybookTemplate() {
+  const blob = new Blob([PLAYBOOK_TEMPLATE_MARKDOWN], { type: 'text/markdown;charset=utf-8' });
+  const blobUrl = URL.createObjectURL(blob);
+  try {
+    if (chrome.downloads?.download) {
+      await chrome.downloads.download({
+        url: blobUrl,
+        filename: PLAYBOOK_TEMPLATE_FILENAME,
+        saveAs: false
+      });
+    } else {
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = PLAYBOOK_TEMPLATE_FILENAME;
+      a.click();
+    }
+    showPlaybookStatus(`AI 可読テンプレート「${PLAYBOOK_TEMPLATE_FILENAME}」をダウンロードしました。`, 'completed');
+  } catch (error) {
+    showPlaybookStatus(`テンプレートのダウンロードに失敗しました: ${error?.message || error}`, 'error');
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  }
+}
+
+// Playbook listeners
+els.uploadPlaybookBtn.addEventListener('click', () => {
+  els.playbookFileInput.value = '';
+  els.playbookFileInput.click();
+});
+
+els.playbookFileInput.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    await handlePlaybookFile(file);
+  } catch (error) {
+    showPlaybookStatus(`手順書読み込みエラー: ${error?.message || error}`, 'error');
+  }
+});
+
+els.downloadPlaybookTemplateBtn.addEventListener('click', downloadPlaybookTemplate);
+
+els.clearPlaybookBtn.addEventListener('click', () => {
+  loadedPlaybook = null;
+  renderLoadedPlaybookUi();
+  showPlaybookStatus('手順書の適用を解除しました。', 'stopped');
+});
+
+els.applyPlaybookGoalBtn.addEventListener('click', () => {
+  if (!loadedPlaybook) return;
+  els.goalInput.value = loadedPlaybook.goal
+    ? `${loadedPlaybook.goal}\n（手順書「${loadedPlaybook.title}」に従って実行してください）`
+    : `手順書「${loadedPlaybook.title}」のステップに従って実行してください。`;
+  els.goalInput.focus();
+  els.goalInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+
+els.playbookDropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  els.playbookDropZone.classList.add('drag-over');
+});
+els.playbookDropZone.addEventListener('dragleave', () => {
+  els.playbookDropZone.classList.remove('drag-over');
+});
+els.playbookDropZone.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  els.playbookDropZone.classList.remove('drag-over');
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  try {
+    await handlePlaybookFile(file);
+  } catch (error) {
+    showPlaybookStatus(`手順書読み込みエラー: ${error?.message || error}`, 'error');
+  }
+});
 
 // PDF workspace listeners
 els.pdfSection.addEventListener('toggle', () => {
@@ -1133,6 +1297,7 @@ els.refreshRecentPdfBtn.addEventListener('click', refreshRecentPdfDownloads);
 
 // Boot
 renderSetupFlags();
+renderLoadedPlaybookUi();
 renderLoadedPdfUi();
 await loadSettings();
 await refreshAvailability();

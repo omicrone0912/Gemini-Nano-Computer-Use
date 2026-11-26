@@ -21,7 +21,8 @@ const bgState = {
   events: [],
   pendingConfirmation: null,
   lastOutcome: null,
-  loadedPdf: null
+  loadedPdf: null,
+  loadedPlaybook: null
 };
 
 function isRestrictedUrl(url = '') {
@@ -437,7 +438,8 @@ async function observeWorkspaceTab({ useVision, maxElements, maxImageWidth }) {
     image,
     previewDataUrl,
     pdfContext: getBgPdfContext(),
-    workspaceContext
+    workspaceContext,
+    playbookContext: bgState.loadedPlaybook
   };
 }
 
@@ -538,7 +540,7 @@ async function executeWorkspaceAction(action) {
   }
 }
 
-async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = null }) {
+async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = null, initialPlaybook = null }) {
   if (bgState.running) {
     return { ok: false, error: 'すでにバックグラウンドでタスクを実行中です。' };
   }
@@ -574,6 +576,7 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
   bgState.events = [];
   bgState.pendingConfirmation = null;
   bgState.lastOutcome = null;
+  bgState.loadedPlaybook = initialPlaybook || null;
 
   if (initialPdf?.pdfBase64) {
     try {
@@ -669,7 +672,12 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || typeof message.type !== 'string') {
+  if (
+    !message ||
+    typeof message.type !== 'string' ||
+    message.target === 'offscreen' ||
+    message.type === MSG_TYPES.AGENT_EVENT
+  ) {
     return false;
   }
 
@@ -768,7 +776,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             tabId: message.tabId,
             goal: message.goal,
             settings: message.settings,
-            initialPdf: message.initialPdf || null
+            initialPdf: message.initialPdf || null,
+            initialPlaybook: message.initialPlaybook || null
           });
           sendResponse(res);
           break;
@@ -809,7 +818,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                     downloadId: bgState.loadedPdf.downloadId,
                     currentPage: bgState.loadedPdf.currentPage
                   }
-                : null
+                : null,
+              loadedPlaybook: bgState.loadedPlaybook
             },
             workspace: ws
           });

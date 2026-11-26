@@ -178,6 +178,7 @@ export class AgentController {
         const image = observation?.image ?? null;
         const pdfContext = observation?.pdfContext ?? null;
         const workspaceContext = observation?.workspaceContext ?? null;
+        const playbookContext = observation?.playbookContext ?? null;
 
         this.emit('observation_captured', {
           step,
@@ -201,7 +202,8 @@ export class AgentController {
           hasImage: Boolean(image && initResult.multimodal),
           loopWarning,
           pdfContext,
-          workspaceContext
+          workspaceContext,
+          playbookContext
         });
         loopWarning = '';
 

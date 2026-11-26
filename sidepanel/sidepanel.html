@@ -120,6 +120,39 @@
 
       <section id="resultBanner" class="result-banner hidden"></section>
 
+      <details id="playbookSection" class="pdf-accordion">
+        <summary class="pdf-accordion-summary">
+          <span class="pdf-accordion-title">手順書（SOP）アップロード・テンプレート</span>
+          <span id="playbookSummaryBadge" class="pdf-summary-badge">未設定</span>
+        </summary>
+
+        <div class="pdf-accordion-body">
+          <div class="pdf-primary-actions">
+            <button id="uploadPlaybookBtn" class="btn btn-primary btn-xs" type="button">手順書をアップロード</button>
+            <button id="downloadPlaybookTemplateBtn" class="btn btn-secondary btn-xs" type="button">テンプレートをDL</button>
+            <input id="playbookFileInput" type="file" accept=".md,.markdown,.txt,.json,.pdf,text/markdown,text/plain,application/json,application/pdf" class="hidden" />
+          </div>
+
+          <div id="playbookDropZone" class="pdf-dropzone" tabindex="0">
+            手順書（.md / .txt / .json / .pdf）をここにドラッグ＆ドロップできます
+          </div>
+
+          <div id="playbookStatusBanner" class="result-banner hidden"></div>
+
+          <div id="playbookMetaCard" class="pdf-meta-card hidden">
+            <div class="pdf-meta-row">
+              <strong id="playbookMetaTitle" class="pdf-meta-filename"></strong>
+              <button id="clearPlaybookBtn" class="btn btn-ghost btn-xs" type="button">解除</button>
+            </div>
+            <div id="playbookMetaStats" class="pdf-meta-stats"></div>
+            <div class="pdf-secondary-actions">
+              <button id="applyPlaybookGoalBtn" class="btn btn-secondary btn-xs" type="button">目標欄へセット</button>
+            </div>
+            <pre id="playbookPreviewText" class="playbook-preview-text"></pre>
+          </div>
+        </div>
+      </details>
+
       <details id="pdfSection" class="pdf-accordion">
         <summary class="pdf-accordion-summary">
           <span class="pdf-accordion-title">PDF ダウンロード・読込・閲覧</span>

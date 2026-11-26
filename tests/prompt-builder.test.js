@@ -80,3 +80,18 @@ test('buildStepPrompt includes workspace tab group context when multiTabEnabled'
   assert.match(prompt, /Nano AI/);
   assert.match(prompt, /\[2\] \(操作中\) Site B/);
 });
+
+test('buildStepPrompt includes uploaded playbook context when present', () => {
+  const prompt = buildStepPrompt({
+    goal: '手順書を実行',
+    snapshot: { restricted: false, url: 'https://example.com', title: 'Top', elements: [] },
+    playbookContext: {
+      title: 'テスト手順書',
+      filename: 'test-sop.md',
+      rawText: '## 実行ステップ\n1. [click] ログインを押す'
+    }
+  });
+
+  assert.match(prompt, /# 適用中の手順書 \(テスト手順書\)/);
+  assert.match(prompt, /1\. \[click\] ログインを押す/);
+});

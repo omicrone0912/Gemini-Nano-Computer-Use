@@ -50,6 +50,7 @@ const els = {
   allowBackgroundCheckbox: document.getElementById('allowBackgroundCheckbox'),
   allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
   useBuiltInViewerCheckbox: document.getElementById('useBuiltInViewerCheckbox'),
+  advancedSettingsBadge: document.getElementById('advancedSettingsBadge'),
   runBtn: document.getElementById('runBtn'),
   stopBtn: document.getElementById('stopBtn'),
   clearLogBtn: document.getElementById('clearLogBtn'),
@@ -90,34 +91,6 @@ const els = {
   applyPlaybookGoalBtn: document.getElementById('applyPlaybookGoalBtn'),
   playbookImagesGrid: document.getElementById('playbookImagesGrid'),
   playbookPreviewText: document.getElementById('playbookPreviewText'),
-  pdfSection: document.getElementById('pdfSection'),
-  pdfSummaryBadge: document.getElementById('pdfSummaryBadge'),
-  capturePagePdfBtn: document.getElementById('capturePagePdfBtn'),
-  openPdfFileBtn: document.getElementById('openPdfFileBtn'),
-  openMediaViewerBtn: document.getElementById('openMediaViewerBtn'),
-  pdfFileInput: document.getElementById('pdfFileInput'),
-  pdfDropZone: document.getElementById('pdfDropZone'),
-  pdfStatusBanner: document.getElementById('pdfStatusBanner'),
-  pdfMetaCard: document.getElementById('pdfMetaCard'),
-  pdfMetaFilename: document.getElementById('pdfMetaFilename'),
-  pdfMetaStats: document.getElementById('pdfMetaStats'),
-  unloadPdfBtn: document.getElementById('unloadPdfBtn'),
-  openPdfTabBtn: document.getElementById('openPdfTabBtn'),
-  summarizePdfAiBtn: document.getElementById('summarizePdfAiBtn'),
-  pdfViewPreviewBtn: document.getElementById('pdfViewPreviewBtn'),
-  pdfViewTextBtn: document.getElementById('pdfViewTextBtn'),
-  pdfPreviewPane: document.getElementById('pdfPreviewPane'),
-  pdfTextPane: document.getElementById('pdfTextPane'),
-  pdfViewerEmpty: document.getElementById('pdfViewerEmpty'),
-  pdfViewerFrame: document.getElementById('pdfViewerFrame'),
-  pdfPrevPageBtn: document.getElementById('pdfPrevPageBtn'),
-  pdfPageIndicator: document.getElementById('pdfPageIndicator'),
-  pdfNextPageBtn: document.getElementById('pdfNextPageBtn'),
-  pdfAllPagesBtn: document.getElementById('pdfAllPagesBtn'),
-  pdfCopyTextBtn: document.getElementById('pdfCopyTextBtn'),
-  pdfExtractedText: document.getElementById('pdfExtractedText'),
-  refreshRecentPdfBtn: document.getElementById('refreshRecentPdfBtn'),
-  recentPdfList: document.getElementById('recentPdfList'),
   tabAgentBtn: document.getElementById('tabAgentBtn'),
   tabFlowBtn: document.getElementById('tabFlowBtn'),
   agentPanel: document.getElementById('agentPanel'),
@@ -136,7 +109,6 @@ const els = {
 const nanoClient = new NanoClient(globalThis);
 const presetStore = new WorkflowPresetStore(chrome.storage?.local);
 const stepCards = new Map();
-const sessionPdfCache = new Map();
 let flowPresets = [];
 let selectedFlowPresetId = null;
 let activeController = null;
@@ -146,7 +118,6 @@ let activeBgConfirmCleanup = null;
 let availabilityState = null;
 let loadedPdf = null;
 let loadedPlaybook = null;
-let pdfShowAllPages = false;
 
 function renderSetupFlags() {
   els.flagsList.innerHTML = '';
@@ -171,19 +142,32 @@ function renderSetupFlags() {
   }
 }
 
+function updateAdvancedSettingsBadge() {
+  if (!els.advancedSettingsBadge) return;
+  const flags = [
+    els.useVisionCheckbox?.checked,
+    els.allowBackgroundCheckbox?.checked,
+    els.allowMultiTabCheckbox?.checked,
+    els.useBuiltInViewerCheckbox?.checked
+  ];
+  const onCount = flags.filter(Boolean).length;
+  els.advancedSettingsBadge.textContent = onCount === flags.length ? 'すべてON' : `${onCount}/${flags.length} ON`;
+}
+
 async function loadSettings() {
   try {
     const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
     const saved = { ...DEFAULT_SETTINGS, ...(stored?.[SETTINGS_STORAGE_KEY] || {}) };
     els.executionModeSelect.value = saved.executionMode;
     els.maxStepsInput.value = String(saved.maxSteps);
-    els.useVisionCheckbox.checked = Boolean(saved.useVision);
-    els.allowBackgroundCheckbox.checked = Boolean(saved.allowBackgroundExecution);
-    els.allowMultiTabCheckbox.checked = Boolean(saved.allowMultiTab);
+    els.useVisionCheckbox.checked = saved.useVision !== false;
+    els.allowBackgroundCheckbox.checked = saved.allowBackgroundExecution !== false;
+    els.allowMultiTabCheckbox.checked = saved.allowMultiTab !== false;
     els.useBuiltInViewerCheckbox.checked = saved.useBuiltInViewer !== false;
   } catch {
     // Ignore storage error
   }
+  updateAdvancedSettingsBadge();
 }
 
 async function syncViewerInterceptConfig(extra = {}) {
@@ -199,6 +183,7 @@ async function syncViewerInterceptConfig(extra = {}) {
 }
 
 async function saveSettings() {
+  updateAdvancedSettingsBadge();
   const settings = collectSettings();
   try {
     await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: settings });
@@ -251,6 +236,7 @@ async function refreshAvailability() {
     els.statusText.textContent = message;
     els.setupGuide.classList.remove('hidden');
   }
+  updateAdvancedSettingsBadge();
 }
 
 async function getActiveTab() {
@@ -407,31 +393,6 @@ async function observeCurrentTab({ useVision, maxElements, maxImageWidth }) {
   };
 }
 
-function formatByteSize(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function switchPdfSubView(mode) {
-  const isText = mode === 'text';
-  els.pdfViewPreviewBtn.classList.toggle('active', !isText);
-  els.pdfViewTextBtn.classList.toggle('active', isText);
-  els.pdfPreviewPane.classList.toggle('hidden', isText);
-  els.pdfTextPane.classList.toggle('hidden', !isText);
-}
-
-function showPdfStatus(message, kind = 'completed') {
-  if (!message) {
-    els.pdfStatusBanner.classList.add('hidden');
-    return;
-  }
-  els.pdfStatusBanner.className = `result-banner ${kind}`;
-  els.pdfStatusBanner.textContent = message;
-  els.pdfStatusBanner.classList.remove('hidden');
-}
-
 function getLoadedPdfContext() {
   if (!loadedPdf) return null;
   const snippet = extractPdfPageSnippet(loadedPdf.parsed, loadedPdf.currentPage, 1600);
@@ -443,94 +404,15 @@ function getLoadedPdfContext() {
   };
 }
 
-function cacheSessionPdf(key, filename, bytes, downloadId = null) {
-  if (!key) return;
-  if (sessionPdfCache.size >= 5) {
-    const oldestKey = sessionPdfCache.keys().next().value;
-    sessionPdfCache.delete(oldestKey);
-  }
-  sessionPdfCache.set(key, { filename, bytes, downloadId });
-}
-
-function renderLoadedPdfUi() {
-  if (!loadedPdf) {
-    els.pdfSummaryBadge.textContent = '未読込';
-    els.pdfSummaryBadge.classList.remove('loaded');
-    els.pdfMetaCard.classList.add('hidden');
-    els.pdfViewerFrame.classList.add('hidden');
-    els.pdfViewerFrame.src = 'about:blank';
-    els.pdfViewerEmpty.classList.remove('hidden');
-    els.pdfExtractedText.textContent = 'PDF が読み込まれていません。';
-    els.pdfPageIndicator.textContent = '0 / 0';
-    els.pdfPrevPageBtn.disabled = true;
-    els.pdfNextPageBtn.disabled = true;
-    return;
-  }
-
-  const { filename, blobUrl, parsed, currentPage } = loadedPdf;
-  const totalPages = Math.max(1, parsed.pageCount);
-
-  els.pdfSummaryBadge.textContent = `${filename} (${totalPages}P)`;
-  els.pdfSummaryBadge.classList.add('loaded');
-
-  els.pdfMetaCard.classList.remove('hidden');
-  els.pdfMetaFilename.textContent = filename;
-  const charCount = parsed.fullText.length;
-  els.pdfMetaStats.textContent = `PDF v${parsed.version} ・ ${totalPages}ページ ・ ${formatByteSize(parsed.byteLength)} ・ 抽出文字数 ${charCount}字`;
-
-  els.pdfViewerEmpty.classList.add('hidden');
-  els.pdfViewerFrame.classList.remove('hidden');
-  const frameUrl = `${blobUrl}#page=${currentPage}`;
-  if (els.pdfViewerFrame.src !== frameUrl) {
-    els.pdfViewerFrame.src = frameUrl;
-  }
-
-  els.pdfPageIndicator.textContent = pdfShowAllPages ? `全 ${totalPages}P` : `${currentPage} / ${totalPages}`;
-  els.pdfPrevPageBtn.disabled = pdfShowAllPages || currentPage <= 1;
-  els.pdfNextPageBtn.disabled = pdfShowAllPages || currentPage >= totalPages;
-  els.pdfAllPagesBtn.textContent = pdfShowAllPages ? 'ページ別表示' : '全ページ表示';
-
-  if (pdfShowAllPages) {
-    els.pdfExtractedText.textContent = parsed.fullText || '（テキストを抽出できませんでした。プレビュータブをご確認ください）';
-  } else {
-    const pageObj = parsed.pages[currentPage - 1];
-    els.pdfExtractedText.textContent =
-      pageObj?.text || `（${currentPage} ページ目に抽出可能なテキストが見つかりませんでした。画像ベースの PDF の可能性があります）`;
-  }
-}
-
-function unloadPdf() {
-  if (loadedPdf?.blobUrl) {
-    URL.revokeObjectURL(loadedPdf.blobUrl);
-  }
-  loadedPdf = null;
-  pdfShowAllPages = false;
-  renderLoadedPdfUi();
-}
-
 async function loadPdfFromBytes(bytes, filename, downloadId = null) {
   const parsed = await parsePdfBytes(bytes);
-  if (loadedPdf?.blobUrl) {
-    URL.revokeObjectURL(loadedPdf.blobUrl);
-  }
-  const blob = new Blob([bytes], { type: 'application/pdf' });
-  const blobUrl = URL.createObjectURL(blob);
-
   loadedPdf = {
     filename: filename || 'document.pdf',
     bytes,
-    blobUrl,
     parsed,
     currentPage: 1,
     downloadId
   };
-  pdfShowAllPages = false;
-  if (downloadId !== null) {
-    cacheSessionPdf(`dl:${downloadId}`, loadedPdf.filename, bytes, downloadId);
-  }
-  cacheSessionPdf(`name:${loadedPdf.filename}`, loadedPdf.filename, bytes, downloadId);
-  els.pdfSection.open = true;
-  renderLoadedPdfUi();
   return parsed;
 }
 
@@ -547,82 +429,7 @@ async function captureAndLoadCurrentTabPdf(requestedFilename = '') {
   }
   const bytes = base64ToUint8Array(res.pdfBase64);
   const parsed = await loadPdfFromBytes(bytes, res.filename, res.downloadId ?? null);
-  await refreshRecentPdfDownloads();
   return { ...res, parsed };
-}
-
-async function refreshRecentPdfDownloads() {
-  try {
-    const res = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_RECENT_PDF_DOWNLOADS });
-    if (!res?.ok || !Array.isArray(res.items) || res.items.length === 0) {
-      els.recentPdfList.innerHTML = '<div class="empty-state">PDF のダウンロード履歴はまだありません。</div>';
-      return;
-    }
-
-    els.recentPdfList.innerHTML = '';
-    for (const item of res.items) {
-      const row = document.createElement('div');
-      row.className = 'recent-pdf-item';
-
-      const info = document.createElement('div');
-      info.className = 'recent-pdf-info';
-
-      const nameEl = document.createElement('span');
-      nameEl.className = 'recent-pdf-name';
-      nameEl.textContent = item.basename;
-      nameEl.title = item.filename || item.basename;
-
-      const metaEl = document.createElement('span');
-      metaEl.className = 'recent-pdf-meta';
-      const timeLabel = item.startTime ? new Date(item.startTime).toLocaleString('ja-JP') : '';
-      metaEl.textContent = `${formatByteSize(item.fileSize)} ${timeLabel ? `・ ${timeLabel}` : ''}`;
-
-      info.appendChild(nameEl);
-      info.appendChild(metaEl);
-
-      const actions = document.createElement('div');
-      actions.className = 'recent-pdf-actions';
-
-      const cached = sessionPdfCache.get(`dl:${item.id}`) || sessionPdfCache.get(`name:${item.basename}`);
-      if (cached) {
-        const loadBtn = document.createElement('button');
-        loadBtn.type = 'button';
-        loadBtn.className = 'btn btn-primary btn-xs';
-        loadBtn.textContent = '読込';
-        loadBtn.addEventListener('click', async () => {
-          await loadPdfFromBytes(cached.bytes, cached.filename, item.id);
-          showPdfStatus(`「${cached.filename}」を読み込みました。`, 'completed');
-        });
-        actions.appendChild(loadBtn);
-      }
-
-      const folderBtn = document.createElement('button');
-      folderBtn.type = 'button';
-      folderBtn.className = 'btn btn-secondary btn-xs';
-      folderBtn.textContent = 'フォルダ';
-      folderBtn.addEventListener('click', () => {
-        chrome.runtime.sendMessage({
-          type: MSG_TYPES.SHOW_DOWNLOAD_IN_FOLDER,
-          downloadId: item.id
-        });
-      });
-      actions.appendChild(folderBtn);
-
-      row.appendChild(info);
-      row.appendChild(actions);
-      els.recentPdfList.appendChild(row);
-    }
-  } catch {
-    // Ignore history refresh failure
-  }
-}
-
-async function handleLocalPdfFile(file) {
-  if (!file) return;
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const parsed = await loadPdfFromBytes(bytes, file.name);
-  showPdfStatus(`「${file.name}」(${parsed.pageCount}ページ) をローカル読み込みしました。`, 'completed');
 }
 
 function isViewerTabUrl(url = '') {
@@ -748,8 +555,6 @@ async function executeTabAction(action) {
       }
       const reqPage = Math.max(1, Math.min(loadedPdf.parsed.pageCount || 1, Number(action.page) || 1));
       loadedPdf.currentPage = reqPage;
-      pdfShowAllPages = false;
-      renderLoadedPdfUi();
       const snippet = extractPdfPageSnippet(loadedPdf.parsed, reqPage, 1600);
       return {
         ok: true,
@@ -1149,9 +954,6 @@ els.useVisionCheckbox.addEventListener('change', saveSettings);
 els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
 els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
 els.useBuiltInViewerCheckbox.addEventListener('change', saveSettings);
-els.openMediaViewerBtn.addEventListener('click', () => {
-  chrome.tabs.create({ url: chrome.runtime.getURL('viewer/viewer.html') });
-});
 
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== MSG_TYPES.AGENT_EVENT) {
@@ -1185,7 +987,6 @@ async function restoreBackgroundRunState() {
       );
       if (loadedPdf && state.loadedPdfMeta.currentPage) {
         loadedPdf.currentPage = state.loadedPdfMeta.currentPage;
-        renderLoadedPdfUi();
       }
     }
 
@@ -1433,111 +1234,6 @@ els.playbookDropZone.addEventListener('drop', async (e) => {
   }
 });
 
-// PDF workspace listeners
-els.pdfSection.addEventListener('toggle', () => {
-  if (els.pdfSection.open) {
-    refreshRecentPdfDownloads();
-  }
-});
-els.unloadPdfBtn.addEventListener('click', () => {
-  unloadPdf();
-  showPdfStatus('PDF の読み込みを解除しました。', 'stopped');
-});
-
-els.pdfViewPreviewBtn.addEventListener('click', () => switchPdfSubView('preview'));
-els.pdfViewTextBtn.addEventListener('click', () => switchPdfSubView('text'));
-
-els.capturePagePdfBtn.addEventListener('click', async () => {
-  els.capturePagePdfBtn.disabled = true;
-  showPdfStatus('現在の画面を PDF 化してダウンロードしています...', 'completed');
-  try {
-    const res = await captureAndLoadCurrentTabPdf();
-    showPdfStatus(
-      `「${res.filename}」(${res.parsed.pageCount}ページ) をダウンロードして読み込みました。`,
-      'completed'
-    );
-  } catch (error) {
-    showPdfStatus(`PDF 保存エラー: ${error?.message || error}`, 'error');
-  } finally {
-    els.capturePagePdfBtn.disabled = false;
-  }
-});
-
-els.openPdfFileBtn.addEventListener('click', () => {
-  els.pdfFileInput.value = '';
-  els.pdfFileInput.click();
-});
-
-els.pdfFileInput.addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  try {
-    await handleLocalPdfFile(file);
-  } catch (error) {
-    showPdfStatus(`PDF 読み込みエラー: ${error?.message || error}`, 'error');
-  }
-});
-
-els.pdfDropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  els.pdfDropZone.classList.add('drag-over');
-});
-els.pdfDropZone.addEventListener('dragleave', () => {
-  els.pdfDropZone.classList.remove('drag-over');
-});
-els.pdfDropZone.addEventListener('drop', async (e) => {
-  e.preventDefault();
-  els.pdfDropZone.classList.remove('drag-over');
-  const file = e.dataTransfer?.files?.[0];
-  if (!file) return;
-  try {
-    await handleLocalPdfFile(file);
-  } catch (error) {
-    showPdfStatus(`PDF 読み込みエラー: ${error?.message || error}`, 'error');
-  }
-});
-
-els.openPdfTabBtn.addEventListener('click', () => {
-  if (!loadedPdf?.blobUrl) return;
-  chrome.tabs.create({ url: `${loadedPdf.blobUrl}#page=${loadedPdf.currentPage}` });
-});
-
-els.summarizePdfAiBtn.addEventListener('click', () => {
-  if (!loadedPdf) return;
-  els.goalInput.value = `現在読み込んでいる PDF「${loadedPdf.filename}」（全${loadedPdf.parsed.pageCount}ページ）の内容を read_pdf なども使って確認し、要点を日本語でわかりやすくまとめて完了してください。`;
-  els.goalInput.focus();
-  els.goalInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-});
-
-els.pdfPrevPageBtn.addEventListener('click', () => {
-  if (!loadedPdf || loadedPdf.currentPage <= 1) return;
-  loadedPdf.currentPage -= 1;
-  renderLoadedPdfUi();
-});
-
-els.pdfNextPageBtn.addEventListener('click', () => {
-  if (!loadedPdf || loadedPdf.currentPage >= loadedPdf.parsed.pageCount) return;
-  loadedPdf.currentPage += 1;
-  renderLoadedPdfUi();
-});
-
-els.pdfAllPagesBtn.addEventListener('click', () => {
-  pdfShowAllPages = !pdfShowAllPages;
-  renderLoadedPdfUi();
-});
-
-els.pdfCopyTextBtn.addEventListener('click', async () => {
-  if (!loadedPdf) return;
-  try {
-    await navigator.clipboard.writeText(els.pdfExtractedText.textContent || '');
-    showPdfStatus('表示中の抽出テキストをクリップボードにコピーしました。', 'completed');
-  } catch {
-    showPdfStatus('クリップボードへのコピーに失敗しました。', 'error');
-  }
-});
-
-els.refreshRecentPdfBtn.addEventListener('click', refreshRecentPdfDownloads);
-
 // Flowchart & Local Preset Logic
 function switchMainTab(tabName) {
   const isFlow = tabName === 'flow';
@@ -1764,7 +1460,6 @@ chrome.storage?.onChanged?.addListener((changes, areaName) => {
 // Boot
 renderSetupFlags();
 renderLoadedPlaybookUi();
-renderLoadedPdfUi();
 await loadSettings();
 await syncViewerInterceptConfig();
 await loadFlowPresets();

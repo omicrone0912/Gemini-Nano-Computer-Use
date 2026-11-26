@@ -2,8 +2,7 @@ import { AgentController } from '../shared/agent-controller.js';
 import {
   CHROME_AI_FLAGS,
   DEFAULT_SETTINGS,
-  MSG_TYPES,
-  SAMPLE_TASKS
+  MSG_TYPES
 } from '../shared/constants.js';
 import { NanoClient } from '../shared/nano-client.js';
 import {
@@ -28,7 +27,6 @@ const els = {
   setupGuide: document.getElementById('setupGuide'),
   flagsList: document.getElementById('flagsList'),
   goalInput: document.getElementById('goalInput'),
-  samplesRow: document.getElementById('samplesRow'),
   executionModeSelect: document.getElementById('executionModeSelect'),
   maxStepsInput: document.getElementById('maxStepsInput'),
   useVisionCheckbox: document.getElementById('useVisionCheckbox'),
@@ -58,14 +56,8 @@ const els = {
   imageModalBackdrop: document.getElementById('imageModalBackdrop'),
   closeImageModalBtn: document.getElementById('closeImageModalBtn'),
   modalPreviewImg: document.getElementById('modalPreviewImg'),
-  tabAgentBtn: document.getElementById('tabAgentBtn'),
-  tabPdfBtn: document.getElementById('tabPdfBtn'),
-  agentPanel: document.getElementById('agentPanel'),
-  pdfPanel: document.getElementById('pdfPanel'),
-  activePdfBar: document.getElementById('activePdfBar'),
-  activePdfName: document.getElementById('activePdfName'),
-  gotoPdfTabBtn: document.getElementById('gotoPdfTabBtn'),
-  unloadPdfQuickBtn: document.getElementById('unloadPdfQuickBtn'),
+  pdfSection: document.getElementById('pdfSection'),
+  pdfSummaryBadge: document.getElementById('pdfSummaryBadge'),
   capturePagePdfBtn: document.getElementById('capturePagePdfBtn'),
   openPdfFileBtn: document.getElementById('openPdfFileBtn'),
   pdfFileInput: document.getElementById('pdfFileInput'),
@@ -103,7 +95,6 @@ let activeBgConfirmCleanup = null;
 let availabilityState = null;
 let loadedPdf = null;
 let pdfShowAllPages = false;
-let activeMainTab = 'agent';
 
 function renderSetupFlags() {
   els.flagsList.innerHTML = '';
@@ -125,20 +116,6 @@ function renderSetupFlags() {
       }
     });
     els.flagsList.appendChild(li);
-  }
-}
-
-function renderSampleChips() {
-  els.samplesRow.innerHTML = '';
-  for (const sample of SAMPLE_TASKS) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'sample-chip';
-    btn.textContent = sample.label;
-    btn.addEventListener('click', () => {
-      els.goalInput.value = sample.goal;
-    });
-    els.samplesRow.appendChild(btn);
   }
 }
 
@@ -321,18 +298,6 @@ function formatByteSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function switchMainTab(tabName) {
-  activeMainTab = tabName === 'pdf' ? 'pdf' : 'agent';
-  const isPdf = activeMainTab === 'pdf';
-  els.tabAgentBtn.classList.toggle('active', !isPdf);
-  els.tabPdfBtn.classList.toggle('active', isPdf);
-  els.agentPanel.classList.toggle('hidden', isPdf);
-  els.pdfPanel.classList.toggle('hidden', !isPdf);
-  if (isPdf) {
-    refreshRecentPdfDownloads();
-  }
-}
-
 function switchPdfSubView(mode) {
   const isText = mode === 'text';
   els.pdfViewPreviewBtn.classList.toggle('active', !isText);
@@ -373,7 +338,8 @@ function cacheSessionPdf(key, filename, bytes, downloadId = null) {
 
 function renderLoadedPdfUi() {
   if (!loadedPdf) {
-    els.activePdfBar.classList.add('hidden');
+    els.pdfSummaryBadge.textContent = '未読込';
+    els.pdfSummaryBadge.classList.remove('loaded');
     els.pdfMetaCard.classList.add('hidden');
     els.pdfViewerFrame.classList.add('hidden');
     els.pdfViewerFrame.src = 'about:blank';
@@ -388,8 +354,8 @@ function renderLoadedPdfUi() {
   const { filename, blobUrl, parsed, currentPage } = loadedPdf;
   const totalPages = Math.max(1, parsed.pageCount);
 
-  els.activePdfBar.classList.remove('hidden');
-  els.activePdfName.textContent = `${filename} (${totalPages}ページ)`;
+  els.pdfSummaryBadge.textContent = `${filename} (${totalPages}P)`;
+  els.pdfSummaryBadge.classList.add('loaded');
 
   els.pdfMetaCard.classList.remove('hidden');
   els.pdfMetaFilename.textContent = filename;
@@ -447,6 +413,7 @@ async function loadPdfFromBytes(bytes, filename, downloadId = null) {
     cacheSessionPdf(`dl:${downloadId}`, loadedPdf.filename, bytes, downloadId);
   }
   cacheSessionPdf(`name:${loadedPdf.filename}`, loadedPdf.filename, bytes, downloadId);
+  els.pdfSection.open = true;
   renderLoadedPdfUi();
   return parsed;
 }
@@ -1060,10 +1027,11 @@ els.closeImageModalBtn.addEventListener('click', () => els.imageModal.classList.
 els.imageModalBackdrop.addEventListener('click', () => els.imageModal.classList.add('hidden'));
 
 // PDF workspace listeners
-els.tabAgentBtn.addEventListener('click', () => switchMainTab('agent'));
-els.tabPdfBtn.addEventListener('click', () => switchMainTab('pdf'));
-els.gotoPdfTabBtn.addEventListener('click', () => switchMainTab('pdf'));
-els.unloadPdfQuickBtn.addEventListener('click', unloadPdf);
+els.pdfSection.addEventListener('toggle', () => {
+  if (els.pdfSection.open) {
+    refreshRecentPdfDownloads();
+  }
+});
 els.unloadPdfBtn.addEventListener('click', () => {
   unloadPdf();
   showPdfStatus('PDF の読み込みを解除しました。', 'stopped');
@@ -1130,7 +1098,8 @@ els.openPdfTabBtn.addEventListener('click', () => {
 els.summarizePdfAiBtn.addEventListener('click', () => {
   if (!loadedPdf) return;
   els.goalInput.value = `現在読み込んでいる PDF「${loadedPdf.filename}」（全${loadedPdf.parsed.pageCount}ページ）の内容を read_pdf なども使って確認し、要点を日本語でわかりやすくまとめて完了してください。`;
-  switchMainTab('agent');
+  els.goalInput.focus();
+  els.goalInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
 
 els.pdfPrevPageBtn.addEventListener('click', () => {
@@ -1164,7 +1133,6 @@ els.refreshRecentPdfBtn.addEventListener('click', refreshRecentPdfDownloads);
 
 // Boot
 renderSetupFlags();
-renderSampleChips();
 renderLoadedPdfUi();
 await loadSettings();
 await refreshAvailability();

@@ -281,27 +281,6 @@ textarea {
   min-height: 68px;
 }
 
-.samples-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.sample-chip {
-  border: 1px solid var(--border);
-  background: var(--surface-alt);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 3px 9px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.sample-chip:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
 .controls-grid {
   display: grid;
   grid-template-columns: 1fr 96px;
@@ -615,83 +594,77 @@ textarea {
   cursor: pointer;
 }
 
-/* Main Tab Switcher */
-.main-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
+/* Integrated PDF Accordion inside AI Control Screen */
+.pdf-accordion {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 4px;
+  box-shadow: var(--shadow);
 }
 
-.main-tab-btn {
-  border: none;
-  border-radius: 7px;
-  padding: 7px 10px;
-  font: inherit;
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-  background: transparent;
-  color: var(--text-muted);
-}
-
-.main-tab-btn.active {
-  background: var(--primary);
-  color: #ffffff;
-}
-
-/* Loaded PDF quick bar in Agent tab */
-.active-pdf-bar {
+.pdf-accordion-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: rgba(37, 99, 235, 0.08);
-  border: 1px solid var(--primary);
-  border-radius: var(--radius);
-  padding: 7px 10px;
-}
-
-.active-pdf-info {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-}
-
-.pdf-badge {
-  background: var(--primary);
-  color: #ffffff;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 999px;
-  flex-shrink: 0;
-}
-
-.active-pdf-name {
-  font-size: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
   font-weight: 600;
+  font-size: 12.5px;
+}
+
+.pdf-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pdf-accordion-summary::before {
+  content: '▸';
+  color: var(--text-muted);
+  margin-right: 4px;
+  transition: transform 0.15s ease;
+}
+
+.pdf-accordion[open] > .pdf-accordion-summary::before {
+  transform: rotate(90deg);
+}
+
+.pdf-accordion-title {
+  flex: 1;
+}
+
+.pdf-summary-badge {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  max-width: 170px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.active-pdf-actions {
-  display: flex;
-  gap: 5px;
-  flex-shrink: 0;
+.pdf-summary-badge.loaded {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
-/* PDF Workspace */
-.pdf-panel {
+.pdf-accordion-body {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  flex: 1;
+  gap: 10px;
+}
+
+.pdf-recent-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .pdf-primary-actions {

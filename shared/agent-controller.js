@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, EXECUTION_MODES } from './constants.js';
+import { selectRelevantPlaybookImages } from './playbook.js';
 import { buildStepPrompt, SYSTEM_PROMPT } from './prompt-builder.js';
 import { assessActionRisk, detectActionLoop } from './safety.js';
 
@@ -193,6 +194,12 @@ export class AgentController {
         }
 
         // 2. Think
+        const hasStrictPlaybook = Boolean(playbookContext && playbookContext.strictMode !== false);
+        const referenceImages =
+          initResult.multimodal && playbookContext
+            ? selectRelevantPlaybookImages(playbookContext, step, 2)
+            : [];
+
         const promptText = buildStepPrompt({
           goal: currentGoal,
           snapshot,
@@ -203,7 +210,8 @@ export class AgentController {
           loopWarning,
           pdfContext,
           workspaceContext,
-          playbookContext
+          playbookContext,
+          referenceImages
         });
         loopWarning = '';
 
@@ -212,6 +220,7 @@ export class AgentController {
           decision = await this.nanoClient.decideAction({
             promptText,
             image: initResult.multimodal ? image : null,
+            referenceImages,
             signal
           });
         } catch (error) {
@@ -294,13 +303,34 @@ export class AgentController {
         if (risk.level === 'blocked') {
           const blockResult = { ok: false, blocked: true, error: risk.reason };
           history.push({ step, action, result: blockResult });
-          loopWarning = `直前の操作 (${action.action}) は安全制限でブロックされました: ${risk.reason}`;
           this.emit('step_completed', {
             step,
             action,
             result: blockResult,
             durationMs: Date.now() - stepStart
           });
+          if (hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
+            const esc = await this._confirm(
+              {
+                step,
+                kind: 'ask_user',
+                title: '手順書実行中の確認（指示が必要です）',
+                reason: `安全制限により操作がブロックされました: ${risk.reason}\n続行方法または次の指示を入力してください。`,
+                action,
+                allowCustomReply: true
+              },
+              signal
+            );
+            if (!esc?.approved || esc?.stop) {
+              finalOutcome = { status: 'stopped', message: '確認画面で中断されました。', history };
+              break;
+            }
+            if (esc.userReply?.trim()) {
+              currentGoal = `${currentGoal}\n\n[ユーザーからの追加指示]: ${esc.userReply.trim()}`;
+            }
+            continue;
+          }
+          loopWarning = `直前の操作 (${action.action}) は安全制限でブロックされました: ${risk.reason}`;
           continue;
         }
 
@@ -308,7 +338,30 @@ export class AgentController {
           action.url = risk.normalizedUrl;
         }
 
-        if (detectActionLoop(history, action, 3)) {
+        const loopThreshold = hasStrictPlaybook ? 2 : 3;
+        if (detectActionLoop(history, action, loopThreshold)) {
+          if (hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
+            const esc = await this._confirm(
+              {
+                step,
+                kind: 'ask_user',
+                title: '手順書実行中の確認（同じ操作の繰り返し）',
+                reason:
+                  '手順書に沿った直前と同じ操作が連続しようとしています。画面が進んでいない可能性があるため、次の指示をご入力ください。',
+                action,
+                allowCustomReply: true
+              },
+              signal
+            );
+            if (!esc?.approved || esc?.stop) {
+              finalOutcome = { status: 'stopped', message: '確認画面で中断されました。', history };
+              break;
+            }
+            if (esc.userReply?.trim()) {
+              currentGoal = `${currentGoal}\n\n[ユーザーからの追加指示]: ${esc.userReply.trim()}`;
+            }
+            continue;
+          }
           loopWarning =
             '直近で同じ操作が連続しており画面が進展していません。別の要素、スクロール、または別URLを試してください。';
         }
@@ -372,7 +425,28 @@ export class AgentController {
         });
 
         if (!execResult?.ok && execResult?.error) {
-          loopWarning = `直前の操作 (${summarizeAction(action)}) が失敗しました: ${execResult.error}`;
+          if (hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
+            const esc = await this._confirm(
+              {
+                step,
+                kind: 'ask_user',
+                title: '手順書実行中の確認（操作エラー）',
+                reason: `手順書の操作に失敗しました: ${execResult.error}\n手動で画面を整えて続行するか、次の指示を入力してください。`,
+                action,
+                allowCustomReply: true
+              },
+              signal
+            );
+            if (!esc?.approved || esc?.stop) {
+              finalOutcome = { status: 'stopped', message: '確認画面で中断されました。', history };
+              break;
+            }
+            if (esc.userReply?.trim()) {
+              currentGoal = `${currentGoal}\n\n[ユーザーからの追加指示]: ${esc.userReply.trim()}`;
+            }
+          } else {
+            loopWarning = `直前の操作 (${summarizeAction(action)}) が失敗しました: ${execResult.error}`;
+          }
         }
 
         // 5. Wait between steps for DOM stabilization

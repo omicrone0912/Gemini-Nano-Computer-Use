@@ -56,6 +56,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const decision = await nanoClient.decideAction({
             promptText: message.promptText,
             image,
+            referenceImages: Array.isArray(message.referenceImages) ? message.referenceImages : [],
             signal
           });
           activeAbortController = null;

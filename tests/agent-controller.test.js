@@ -251,3 +251,51 @@ test('AgentController passes playbookContext from observe to buildStepPrompt', a
   assert.equal(outcome.status, 'completed');
   assert.match(promptsSeen[0], /# 適用中の手順書 \(申請手順\)/);
 });
+
+test('AgentController escalates to ask_user confirmation when action fails under strict playbook', async () => {
+  let confirmDetails = null;
+  let step = 0;
+
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: true };
+      },
+      async decideAction() {
+        step += 1;
+        if (step === 1) {
+          return { action: { thought: 'ボタン押下', action: 'click', elementId: 99 }, usage: {} };
+        }
+        return { action: { thought: '完了', action: 'done', message: '人間指示後に完了' }, usage: {} };
+      }
+    },
+    async observe() {
+      return {
+        snapshot: { restricted: false, url: 'https://example.com', elements: [] },
+        playbookContext: {
+          title: '厳格手順',
+          filename: 'strict.docx',
+          strictMode: true,
+          rawText: '## 実行ステップ\n1. [click] ボタン押下',
+          images: [{ index: 1, name: 'btn.png', dataUrl: 'data:image/png;base64,AA==', stepHint: '1. [click]' }]
+        }
+      };
+    },
+    async executeAction() {
+      return { ok: false, error: '要素 #99 が見つかりません' };
+    },
+    async requestConfirmation(details) {
+      confirmDetails = details;
+      return { approved: true, userReply: '手動で修正したので続行してください' };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '手順書通り実行',
+    settings: { maxSteps: 3, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'completed');
+  assert.equal(confirmDetails.kind, 'ask_user');
+  assert.match(confirmDetails.reason, /失敗しました/);
+});

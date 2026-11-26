@@ -24,7 +24,7 @@ export const SYSTEM_PROMPT = `あなたは Google Chrome の画面を操作す�
 2. click / type / select で指定する elementId は、必ず「操作可能な要素一覧」にある番号だけを使ってください。
 3. 画面上に見当たらない情報や操作は、scroll で探すか navigate で移動してください。
 4. 同じ失敗や同じ操作を繰り返さないでください。変化がない場合は別の要素やスクロール、URL遷移を試してください。
-5. 「適用中の手順書」が提示されている場合は、その実行ステップ・前提ルール・確認ポイント（完了条件）に忠実に従って進めてください。
+5. 「適用中の手順書」が提示されている場合は、**厳格手順書モード**として必ず手順書の記載通りに実行してください。手順書に書かれていない状況・見つからない要素・参考画像との不一致・不明点がある場合は、推測で進めず**必ず action: "ask_user" で人間に指示を仰いでください**。
 6. 目標が完了したら、速やかに action: "done" を返し、message に結果の概要を日本語で記述してください。`;
 
 function truncate(str, maxLen) {
@@ -104,16 +104,23 @@ export function buildStepPrompt({
   loopWarning = '',
   pdfContext = null,
   workspaceContext = null,
-  playbookContext = null
+  playbookContext = null,
+  referenceImages = []
 }) {
   const sections = [];
   sections.push(`# 目標\n${goal}`);
   sections.push(`# 進行状況\nステップ ${stepIndex} / ${maxSteps}`);
 
   if (playbookContext && playbookContext.rawText) {
-    const body = truncate(String(playbookContext.rawText).trim(), 2400);
+    const body = truncate(String(playbookContext.rawText).trim(), 2200);
+    const refHint =
+      Array.isArray(referenceImages) && referenceImages.length > 0
+        ? `\n\n【添付された手順書スクリーンショット】\n${referenceImages
+            .map((r) => `- [添付画像 #${r.index}: ${r.name}]${r.stepHint ? ` (${r.stepHint})` : ''}`)
+            .join('\n')}`
+        : '';
     sections.push(
-      `# 適用中の手順書 (${playbookContext.title || playbookContext.filename || '手順書'})\n${body}`
+      `# 適用中の手順書 (${playbookContext.title || playbookContext.filename || '手順書'})\n【厳格手順書モード（必守）】\n- 必ずこの手順書の順序・操作・条件の通りに実行してください（独自判断で別操作を創作しないでください）。\n- 対象要素が見つからない、添付画像と画面が異なる、入力値や分岐が不明な場合は、推測で進めず必ず action: "ask_user" で人間に指示を仰いでください。\n\n${body}${refHint}`
     );
   }
 

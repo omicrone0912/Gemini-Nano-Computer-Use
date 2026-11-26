@@ -12,6 +12,11 @@ import {
   uint8ArrayToBase64
 } from '../shared/pdf-parser.js';
 import {
+  generateDocxPlaybookTemplate,
+  parseOfficePlaybookBytes
+} from '../shared/office-parser.js';
+import {
+  PLAYBOOK_DOCX_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_MARKDOWN,
   parsePlaybookContent
@@ -64,6 +69,7 @@ const els = {
   playbookSection: document.getElementById('playbookSection'),
   playbookSummaryBadge: document.getElementById('playbookSummaryBadge'),
   uploadPlaybookBtn: document.getElementById('uploadPlaybookBtn'),
+  downloadPlaybookDocxBtn: document.getElementById('downloadPlaybookDocxBtn'),
   downloadPlaybookTemplateBtn: document.getElementById('downloadPlaybookTemplateBtn'),
   playbookFileInput: document.getElementById('playbookFileInput'),
   playbookDropZone: document.getElementById('playbookDropZone'),
@@ -73,6 +79,7 @@ const els = {
   clearPlaybookBtn: document.getElementById('clearPlaybookBtn'),
   playbookMetaStats: document.getElementById('playbookMetaStats'),
   applyPlaybookGoalBtn: document.getElementById('applyPlaybookGoalBtn'),
+  playbookImagesGrid: document.getElementById('playbookImagesGrid'),
   playbookPreviewText: document.getElementById('playbookPreviewText'),
   pdfSection: document.getElementById('pdfSection'),
   pdfSummaryBadge: document.getElementById('pdfSummaryBadge'),
@@ -1080,62 +1087,145 @@ function renderLoadedPlaybookUi() {
     els.playbookSummaryBadge.textContent = '未設定';
     els.playbookSummaryBadge.classList.remove('loaded');
     els.playbookMetaCard.classList.add('hidden');
+    els.playbookImagesGrid.classList.add('hidden');
+    els.playbookImagesGrid.innerHTML = '';
     els.playbookPreviewText.textContent = '';
     return;
   }
 
+  const imageCount = Array.isArray(loadedPlaybook.images) ? loadedPlaybook.images.length : 0;
   els.playbookSummaryBadge.textContent = loadedPlaybook.title || loadedPlaybook.filename;
   els.playbookSummaryBadge.classList.add('loaded');
   els.playbookMetaCard.classList.remove('hidden');
   els.playbookMetaTitle.textContent = `${loadedPlaybook.title} (${loadedPlaybook.filename})`;
-  els.playbookMetaStats.textContent = `抽出ステップ ${loadedPlaybook.steps.length}件 ・ ${loadedPlaybook.charCount}文字${
+  els.playbookMetaStats.textContent = `抽出ステップ ${loadedPlaybook.steps.length}件 ・ 添付画像 ${imageCount}枚 ・ ${loadedPlaybook.charCount}文字${
     loadedPlaybook.startUrl ? ` ・ 開始URL: ${loadedPlaybook.startUrl}` : ''
   }`;
   els.playbookPreviewText.textContent = loadedPlaybook.rawText;
+
+  els.playbookImagesGrid.innerHTML = '';
+  if (imageCount > 0) {
+    els.playbookImagesGrid.classList.remove('hidden');
+    for (const imgInfo of loadedPlaybook.images) {
+      const card = document.createElement('div');
+      card.className = 'playbook-img-card';
+      card.title = `${imgInfo.name}${imgInfo.stepHint ? ` (${imgInfo.stepHint})` : ''}`;
+
+      const thumb = document.createElement('img');
+      thumb.src = imgInfo.dataUrl;
+      thumb.alt = imgInfo.name;
+
+      const cap = document.createElement('span');
+      cap.className = 'playbook-img-caption';
+      cap.textContent = `#${imgInfo.index} ${imgInfo.name}`;
+
+      card.appendChild(thumb);
+      card.appendChild(cap);
+      card.addEventListener('click', () => {
+        els.modalPreviewImg.src = imgInfo.dataUrl;
+        els.imageModal.classList.remove('hidden');
+      });
+      els.playbookImagesGrid.appendChild(card);
+    }
+  } else {
+    els.playbookImagesGrid.classList.add('hidden');
+  }
+}
+
+function resizeDataUrlToJpeg(dataUrl, maxWidth = 640) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = img.naturalWidth > maxWidth ? maxWidth / img.naturalWidth : 1;
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 }
 
 async function handlePlaybookFile(file) {
   if (!file) return;
+  const lowerName = file.name.toLowerCase();
   let rawText = '';
-  if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+  let images = [];
+
+  if (lowerName.endsWith('.docx') || lowerName.endsWith('.pptx') || lowerName.endsWith('.xlsx')) {
+    const buf = await file.arrayBuffer();
+    const parsedOffice = await parseOfficePlaybookBytes(new Uint8Array(buf), file.name);
+    rawText = parsedOffice.text;
+    images = await Promise.all(
+      (parsedOffice.images || []).slice(0, 10).map(async (img) => ({
+        ...img,
+        dataUrl: await resizeDataUrlToJpeg(img.dataUrl, 640),
+        mimeType: 'image/jpeg'
+      }))
+    );
+  } else if (lowerName.endsWith('.pdf') || file.type === 'application/pdf') {
     const buf = await file.arrayBuffer();
     const parsedPdf = await parsePdfBytes(new Uint8Array(buf));
     if (!parsedPdf.hasExtractableText) {
-      throw new Error('この PDF からは手順テキストを抽出できませんでした。Markdown (.md) またはテキスト形式をご利用ください。');
+      throw new Error('この PDF からは手順テキストを抽出できませんでした。Word (.docx) または Markdown (.md) 形式をご利用ください。');
     }
     rawText = parsedPdf.fullText;
   } else {
     rawText = await file.text();
   }
 
-  loadedPlaybook = parsePlaybookContent(rawText, file.name);
+  loadedPlaybook = parsePlaybookContent(rawText, file.name, { images });
   els.playbookSection.open = true;
   renderLoadedPlaybookUi();
-  showPlaybookStatus(`手順書「${loadedPlaybook.title}」を読み込みました。`, 'completed');
+  showPlaybookStatus(
+    `手順書「${loadedPlaybook.title}」を読み込みました（添付画像 ${loadedPlaybook.images.length}枚・厳格手順書モード有効）。`,
+    'completed'
+  );
 }
 
-async function downloadPlaybookTemplate() {
-  const blob = new Blob([PLAYBOOK_TEMPLATE_MARKDOWN], { type: 'text/markdown;charset=utf-8' });
+async function downloadBlobFile(blob, filename, label) {
   const blobUrl = URL.createObjectURL(blob);
   try {
     if (chrome.downloads?.download) {
       await chrome.downloads.download({
         url: blobUrl,
-        filename: PLAYBOOK_TEMPLATE_FILENAME,
+        filename,
         saveAs: false
       });
     } else {
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = PLAYBOOK_TEMPLATE_FILENAME;
+      a.download = filename;
       a.click();
     }
-    showPlaybookStatus(`AI 可読テンプレート「${PLAYBOOK_TEMPLATE_FILENAME}」をダウンロードしました。`, 'completed');
+    showPlaybookStatus(`${label}「${filename}」をダウンロードしました。`, 'completed');
   } catch (error) {
     showPlaybookStatus(`テンプレートのダウンロードに失敗しました: ${error?.message || error}`, 'error');
   } finally {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
   }
+}
+
+async function downloadPlaybookTemplate() {
+  const blob = new Blob([PLAYBOOK_TEMPLATE_MARKDOWN], { type: 'text/markdown;charset=utf-8' });
+  await downloadBlobFile(blob, PLAYBOOK_TEMPLATE_FILENAME, 'Markdown テンプレート');
+}
+
+async function downloadDocxPlaybookTemplate() {
+  const docxBytes = generateDocxPlaybookTemplate();
+  const blob = new Blob([docxBytes], {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
+  await downloadBlobFile(blob, PLAYBOOK_DOCX_TEMPLATE_FILENAME, 'Word (.docx) テンプレート');
 }
 
 // Playbook listeners
@@ -1154,6 +1244,7 @@ els.playbookFileInput.addEventListener('change', async (e) => {
   }
 });
 
+els.downloadPlaybookDocxBtn.addEventListener('click', downloadDocxPlaybookTemplate);
 els.downloadPlaybookTemplateBtn.addEventListener('click', downloadPlaybookTemplate);
 
 els.clearPlaybookBtn.addEventListener('click', () => {

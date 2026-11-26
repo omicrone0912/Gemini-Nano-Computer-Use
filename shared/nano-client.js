@@ -1,4 +1,5 @@
 import { ACTION_RESPONSE_SCHEMA, parseActionResponse } from './action-schema.js';
+import { dataUrlToBlob } from './office-parser.js';
 import { SYSTEM_PROMPT } from './prompt-builder.js';
 
 function getLanguageModelApi(env = globalThis) {
@@ -32,6 +33,9 @@ async function queryAvailability(api, variant, options) {
 
 function isUnsupportedFeatureError(error) {
   const name = error?.name || '';
+  if (name === 'QuotaExceededError') {
+    return false;
+  }
   const msg = String(error?.message || '').toLowerCase();
   return (
     name === 'NotSupportedError' ||
@@ -238,44 +242,107 @@ export class NanoClient {
     return found.api.create(options);
   }
 
-  async decideAction({ promptText, image = null, signal } = {}) {
+  async decideAction({ promptText, image = null, referenceImages = [], signal } = {}) {
     const stepSession = await this._createStepSession(signal);
     const useImage = Boolean(image && this.multimodalEnabled);
-    const payload = useImage
-      ? [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', value: promptText },
-              { type: 'image', value: image }
-            ]
-          }
-        ]
-      : promptText;
+    const validRefs = this.multimodalEnabled && Array.isArray(referenceImages)
+      ? referenceImages
+          .map((ref, idx) => {
+            let value = ref?.blob || ref?.value || null;
+            if (!value && ref?.dataUrl) {
+              try {
+                value = dataUrlToBlob(ref.dataUrl);
+              } catch {
+                value = null;
+              }
+            }
+            if (!value) return null;
+            return {
+              index: ref.index ?? idx + 1,
+              name: ref.name || `image-${idx + 1}`,
+              stepHint: ref.stepHint || '',
+              value
+            };
+          })
+          .filter(Boolean)
+      : [];
 
-    try {
-      let rawText;
-      let usedConstraint = true;
+    const buildPayload = (includeMainImage, includeRefs) => {
+      if (!includeMainImage && !includeRefs) {
+        return promptText;
+      }
+      const content = [{ type: 'text', value: promptText }];
+      if (includeMainImage && image) {
+        content.push({ type: 'text', value: '【現在のブラウザ画面スクリーンショット】' });
+        content.push({ type: 'image', value: image });
+      }
+      if (includeRefs && validRefs.length > 0) {
+        for (const ref of validRefs) {
+          content.push({
+            type: 'text',
+            value: `【手順書 添付画像 #${ref.index}: ${ref.name}${ref.stepHint ? ` (${ref.stepHint})` : ''}】`
+          });
+          content.push({ type: 'image', value: ref.value });
+        }
+      }
+      return [{ role: 'user', content }];
+    };
+
+    const runPrompt = async (payload) => {
       try {
         const promptOptions = { responseConstraint: ACTION_RESPONSE_SCHEMA };
         if (signal) promptOptions.signal = signal;
-        rawText = await stepSession.prompt(payload, promptOptions);
+        return {
+          rawText: await stepSession.prompt(payload, promptOptions),
+          usedConstraint: true
+        };
       } catch (error) {
         if (error?.name === 'AbortError' || !isUnsupportedFeatureError(error)) {
           throw error;
         }
-        usedConstraint = false;
-        rawText = await stepSession.prompt(payload, signal ? { signal } : undefined);
+        return {
+          rawText: await stepSession.prompt(payload, signal ? { signal } : undefined),
+          usedConstraint: false
+        };
+      }
+    };
+
+    try {
+      let result;
+      let usedVision = useImage || validRefs.length > 0;
+      try {
+        result = await runPrompt(buildPayload(useImage, validRefs.length > 0));
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        const isQuotaOrUnsupported =
+          error?.name === 'QuotaExceededError' || isUnsupportedFeatureError(error);
+        if (!isQuotaOrUnsupported) throw error;
+
+        if (useImage && validRefs.length > 0) {
+          try {
+            result = await runPrompt(buildPayload(true, false));
+            usedVision = true;
+          } catch (innerError) {
+            if (innerError?.name === 'AbortError') throw innerError;
+            result = await runPrompt(buildPayload(false, false));
+            usedVision = false;
+          }
+        } else if (usedVision) {
+          result = await runPrompt(buildPayload(false, false));
+          usedVision = false;
+        } else {
+          throw error;
+        }
       }
 
-      const action = parseActionResponse(rawText);
+      const action = parseActionResponse(result.rawText);
       const usage = {
         inputUsage: stepSession.inputUsage ?? null,
         inputQuota: stepSession.inputQuota ?? null,
-        usedConstraint,
-        usedVision: useImage
+        usedConstraint: result.usedConstraint,
+        usedVision
       };
-      return { action, rawText, usage };
+      return { action, rawText: result.rawText, usage };
     } finally {
       try {
         stepSession?.destroy?.();

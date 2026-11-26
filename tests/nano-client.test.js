@@ -104,5 +104,53 @@ test('NanoClient passes image content when multimodal session succeeds', async (
   assert.equal(res.action.action, 'click');
   assert.equal(res.action.elementId, 2);
   assert.ok(Array.isArray(capturedPayload));
-  assert.equal(capturedPayload[0].content[1].value, fakeBlob);
+  assert.ok(capturedPayload[0].content.some((item) => item.type === 'image' && item.value === fakeBlob));
+});
+
+test('NanoClient includes referenceImages and falls back cleanly on QuotaExceededError', async () => {
+  let promptCalls = 0;
+  const mainBlob = { size: 10, type: 'image/jpeg' };
+  const refDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+  const mockEnv = {
+    LanguageModel: {
+      async availability() {
+        return 'available';
+      },
+      async create() {
+        return {
+          async clone() {
+            return {
+              async prompt(payload) {
+                promptCalls += 1;
+                const imageCount = Array.isArray(payload)
+                  ? payload[0].content.filter((c) => c.type === 'image').length
+                  : 0;
+                if (imageCount > 1) {
+                  const err = new Error('Too many images');
+                  err.name = 'QuotaExceededError';
+                  throw err;
+                }
+                return JSON.stringify({ thought: '1枚で判定', action: 'click', elementId: 1 });
+              },
+              destroy() {}
+            };
+          },
+          destroy() {}
+        };
+      }
+    }
+  };
+
+  const client = new NanoClient(mockEnv);
+  await client.initialize({ useVision: true });
+  const res = await client.decideAction({
+    promptText: '手順書に沿って実行',
+    image: mainBlob,
+    referenceImages: [{ index: 1, name: 'step1.png', dataUrl: refDataUrl, stepHint: '1. [click]' }]
+  });
+
+  assert.equal(promptCalls, 2);
+  assert.equal(res.action.action, 'click');
+  assert.equal(res.usage.usedVision, true);
 });

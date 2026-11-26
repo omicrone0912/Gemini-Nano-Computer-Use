@@ -89,9 +89,13 @@ test('buildStepPrompt includes uploaded playbook context when present', () => {
       title: 'テスト手順書',
       filename: 'test-sop.md',
       rawText: '## 実行ステップ\n1. [click] ログインを押す'
-    }
+    },
+    referenceImages: [{ index: 1, name: 'login.png', stepHint: '1. [click]' }]
   });
 
   assert.match(prompt, /# 適用中の手順書 \(テスト手順書\)/);
+  assert.match(prompt, /厳格手順書モード/);
+  assert.match(prompt, /ask_user/);
+  assert.match(prompt, /\[添付画像 #1: login\.png\]/);
   assert.match(prompt, /1\. \[click\] ログインを押す/);
 });

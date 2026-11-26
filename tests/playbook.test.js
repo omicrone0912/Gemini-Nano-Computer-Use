@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  PLAYBOOK_DOCX_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_MARKDOWN,
   formatPlaybookForPrompt,
-  parsePlaybookContent
+  parsePlaybookContent,
+  selectRelevantPlaybookImages
 } from '../shared/playbook.js';
 
 test('PLAYBOOK_TEMPLATE_MARKDOWN includes AI-readable structured sections', () => {
@@ -51,4 +53,21 @@ test('parsePlaybookContent rejects empty input and formatPlaybookForPrompt trunc
   const formatted = formatPlaybookForPrompt(longPb, 500);
   assert.ok(formatted.length <= 500);
   assert.match(formatted, /以降省略/);
+  assert.equal(PLAYBOOK_DOCX_TEMPLATE_FILENAME, 'gemini-nano-playbook-template.docx');
+});
+
+test('parsePlaybookContent preserves embedded images and selectRelevantPlaybookImages prioritizes step match', () => {
+  const pb = parsePlaybookContent('# 手順\n\n## 実行ステップ\n1. A\n2. B', 'sop.docx', {
+    images: [
+      { index: 1, name: 'a.png', dataUrl: 'data:image/png;base64,AA==', stepHint: '1. A' },
+      { index: 2, name: 'b.png', dataUrl: 'data:image/png;base64,AA==', stepHint: '2. B' },
+      { index: 3, name: 'c.png', dataUrl: 'data:image/png;base64,AA==', stepHint: '3. C' }
+    ]
+  });
+  assert.equal(pb.strictMode, true);
+  assert.equal(pb.images.length, 3);
+
+  const selected = selectRelevantPlaybookImages(pb, 2, 1);
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].name, 'b.png');
 });

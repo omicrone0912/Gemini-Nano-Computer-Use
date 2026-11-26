@@ -355,7 +355,7 @@ function createOffscreenNanoAdapter() {
       cachedInit = { multimodal: Boolean(res.multimodal), apiVariant: res.apiVariant };
       return cachedInit;
     },
-    async decideAction({ promptText, image, signal }) {
+    async decideAction({ promptText, image, referenceImages = [], signal }) {
       if (signal?.aborted) {
         const err = new Error('Aborted');
         err.name = 'AbortError';
@@ -372,7 +372,8 @@ function createOffscreenNanoAdapter() {
           promptText,
           rawScreenshotDataUrl: image?.rawScreenshotDataUrl || null,
           snapshot: image?.snapshot || null,
-          maxImageWidth: image?.maxImageWidth || 768
+          maxImageWidth: image?.maxImageWidth || 768,
+          referenceImages: Array.isArray(referenceImages) ? referenceImages : []
         });
         if (!res?.ok) {
           if (res?.aborted) {

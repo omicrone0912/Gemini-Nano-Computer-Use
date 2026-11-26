@@ -129,12 +129,16 @@
         <div class="pdf-accordion-body">
           <div class="pdf-primary-actions">
             <button id="uploadPlaybookBtn" class="btn btn-primary btn-xs" type="button">手順書をアップロード</button>
-            <button id="downloadPlaybookTemplateBtn" class="btn btn-secondary btn-xs" type="button">テンプレートをDL</button>
-            <input id="playbookFileInput" type="file" accept=".md,.markdown,.txt,.json,.pdf,text/markdown,text/plain,application/json,application/pdf" class="hidden" />
+            <input id="playbookFileInput" type="file" accept=".docx,.pptx,.xlsx,.md,.markdown,.txt,.json,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/markdown,text/plain,application/json,application/pdf" class="hidden" />
+          </div>
+
+          <div class="pdf-secondary-actions">
+            <button id="downloadPlaybookDocxBtn" class="btn btn-secondary btn-xs" type="button">Word (.docx) テンプレDL</button>
+            <button id="downloadPlaybookTemplateBtn" class="btn btn-ghost btn-xs" type="button">Markdown (.md) DL</button>
           </div>
 
           <div id="playbookDropZone" class="pdf-dropzone" tabindex="0">
-            手順書（.md / .txt / .json / .pdf）をここにドラッグ＆ドロップできます
+            Office文書（.docx / .pptx / .xlsx）や .md / .txt / .json / .pdf をドラッグ＆ドロップできます
           </div>
 
           <div id="playbookStatusBanner" class="result-banner hidden"></div>
@@ -144,10 +148,14 @@
               <strong id="playbookMetaTitle" class="pdf-meta-filename"></strong>
               <button id="clearPlaybookBtn" class="btn btn-ghost btn-xs" type="button">解除</button>
             </div>
+            <div id="playbookStrictBadge" class="playbook-strict-badge">
+              厳格モード: 必ず手順書通りに実行・不明点は人間に指示を仰ぐ
+            </div>
             <div id="playbookMetaStats" class="pdf-meta-stats"></div>
             <div class="pdf-secondary-actions">
               <button id="applyPlaybookGoalBtn" class="btn btn-secondary btn-xs" type="button">目標欄へセット</button>
             </div>
+            <div id="playbookImagesGrid" class="playbook-images-grid hidden"></div>
             <pre id="playbookPreviewText" class="playbook-preview-text"></pre>
           </div>
         </div>

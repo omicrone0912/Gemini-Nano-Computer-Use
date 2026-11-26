@@ -1,4 +1,5 @@
 export const PLAYBOOK_TEMPLATE_FILENAME = 'gemini-nano-playbook-template.md';
+export const PLAYBOOK_DOCX_TEMPLATE_FILENAME = 'gemini-nano-playbook-template.docx';
 
 export const PLAYBOOK_TEMPLATE_MARKDOWN = `# 手順書タイトル: （例）対象サイトの情報確認とPDF保存
 
@@ -9,9 +10,10 @@ export const PLAYBOOK_TEMPLATE_MARKDOWN = `# 手順書タイトル: （例）対
 ## 開始URL
 https://example.com
 
-## 前提条件・実行ルール
+## 前提条件・実行ルール（必守）
+- AI は必ずこの手順書に記載された順序・操作・条件の通りに実行する。手順書にない独自判断や推測操作は行わない。
+- 手順書に書かれていない状況・見つからない要素・参考画像と異なる画面・不明点が出た場合は、必ず [ask_user] で人間に指示を仰ぐ。
 - 実行前にユーザー確認が必要な操作（購入・送信・削除・パスワード入力）は勝手に確定せず停止または確認する。
-- 画面が切り替わらない場合は [wait] で待機するか [scroll] で要素を探す。
 - 複数タブを使う場合は作業用タブグループ内で操作する。
 
 ## 実行ステップ
@@ -107,9 +109,9 @@ function normalizeJsonPlaybook(parsedJson, filename) {
 }
 
 /**
- * Parse Markdown / plain text / JSON / extracted PDF text into a normalized playbook object.
+ * Parse Markdown / plain text / JSON / extracted PDF or Office text into a normalized playbook object.
  */
-export function parsePlaybookContent(rawInput, filename = 'playbook.md') {
+export function parsePlaybookContent(rawInput, filename = 'playbook.md', { images = [] } = {}) {
   const raw = String(rawInput ?? '').trim();
   if (!raw) {
     throw new Error('手順書の内容が空です。文字が含まれるファイルを指定してください。');
@@ -155,15 +157,52 @@ export function parsePlaybookContent(rawInput, filename = 'playbook.md') {
     .filter((l) => /^(?:\d+[.)]|[-*])\s+/.test(l))
     .map((l) => l.replace(/^(?:\d+[.)]|[-*])\s+/, '').trim());
 
+  const normalizedImages = Array.isArray(images)
+    ? images.map((img, idx) => ({
+        index: img.index ?? idx + 1,
+        name: img.name || `image-${idx + 1}.png`,
+        mimeType: img.mimeType || 'image/png',
+        dataUrl: img.dataUrl,
+        byteLength: img.byteLength || 0,
+        stepHint: img.stepHint || ''
+      }))
+    : [];
+
   return {
     filename: String(filename || 'playbook.md'),
     title,
     goal: goalSection || '',
     startUrl,
     steps,
+    images: normalizedImages,
+    strictMode: true,
     rawText: normalizedText,
     charCount: normalizedText.length
   };
+}
+
+/**
+ * Select up to `maxImages` reference screenshots from the playbook relevant to `stepIndex`.
+ */
+export function selectRelevantPlaybookImages(playbook, stepIndex = 1, maxImages = 2) {
+  const images = Array.isArray(playbook?.images) ? playbook.images : [];
+  if (images.length === 0 || maxImages <= 0) return [];
+  if (images.length <= maxImages) return images;
+
+  const stepTokenRe = new RegExp(`(?:^|\\b|step\\s*)${stepIndex}(?:[.)\\s:]|$)`, 'i');
+  const matched = images.filter((img) => stepTokenRe.test(img.stepHint || ''));
+  if (matched.length >= maxImages) {
+    return matched.slice(0, maxImages);
+  }
+
+  const chosen = [...matched];
+  for (const img of images) {
+    if (chosen.length >= maxImages) break;
+    if (!chosen.includes(img)) {
+      chosen.push(img);
+    }
+  }
+  return chosen;
 }
 
 /**

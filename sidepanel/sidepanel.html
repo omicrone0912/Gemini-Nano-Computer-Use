@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gemini Nano Computer Use</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <div class="header-title-row">
+        <div class="brand">
+          <img src="../icons/icon48.png" alt="Icon" class="brand-icon" />
+          <div>
+            <h1>Gemini Nano Computer Use</h1>
+            <p class="subtitle">ローカル AI によるブラウザ自律操作</p>
+          </div>
+        </div>
+        <button id="refreshStatusBtn" class="icon-btn" title="Gemini Nano の状態を再確認" aria-label="再確認">
+          ↻
+        </button>
+      </div>
+
+      <div class="status-card" id="statusCard">
+        <div class="status-row">
+          <span class="status-dot" id="statusDot"></span>
+          <span class="status-text" id="statusText">Gemini Nano の利用可否を確認中...</span>
+        </div>
+        <div class="status-actions">
+          <button id="downloadModelBtn" class="btn btn-secondary btn-xs hidden">モデルをダウンロード</button>
+          <button id="toggleGuideBtn" class="btn btn-ghost btn-xs">設定ガイド</button>
+        </div>
+        <div id="downloadProgressWrap" class="progress-wrap hidden">
+          <div class="progress-track">
+            <div id="downloadProgressBar" class="progress-bar" style="width: 0%"></div>
+          </div>
+          <span id="downloadProgressLabel" class="progress-label">0%</span>
+        </div>
+      </div>
+
+      <section id="setupGuide" class="setup-guide hidden">
+        <h2>Chrome 内蔵 Gemini Nano の有効化手順</h2>
+        <p>利用できない場合は、以下の URL をアドレスバーに開いてフラグを有効化し、Chrome を再起動してください。</p>
+        <ul id="flagsList" class="flags-list"></ul>
+      </section>
+    </header>
+
+    <main class="main-content">
+      <section class="composer-card">
+        <label for="goalInput" class="field-label">AI に任せたい操作（目標）</label>
+        <textarea
+          id="goalInput"
+          rows="3"
+          placeholder="例: Wikipedia を開いて『Gemini』を検索し、概要を教えて"
+        ></textarea>
+
+        <div class="samples-row" id="samplesRow"></div>
+
+        <div class="controls-grid">
+          <div class="control-item">
+            <label for="executionModeSelect">実行モード</label>
+            <select id="executionModeSelect">
+              <option value="auto_safe">自動（危険操作のみ確認）</option>
+              <option value="step_by_step">ステップ実行（毎回確認）</option>
+            </select>
+          </div>
+          <div class="control-item">
+            <label for="maxStepsInput">最大ステップ</label>
+            <input id="maxStepsInput" type="number" min="1" max="50" value="15" />
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="useVisionCheckbox" checked />
+            <span>画面スクリーンショット認識 (Vision / Set-of-Mark) を有効化</span>
+          </label>
+        </div>
+
+        <div class="run-actions">
+          <button id="runBtn" class="btn btn-primary">実行開始</button>
+          <button id="stopBtn" class="btn btn-danger hidden">緊急停止</button>
+          <button id="clearLogBtn" class="btn btn-ghost">履歴クリア</button>
+        </div>
+      </section>
+
+      <section id="confirmCard" class="confirm-card hidden">
+        <div class="confirm-header">
+          <span class="confirm-badge" id="confirmBadge">確認</span>
+          <h3 id="confirmTitle">操作の確認</h3>
+        </div>
+        <p id="confirmReason" class="confirm-reason"></p>
+        <pre id="confirmActionDetail" class="confirm-detail"></pre>
+        <div id="customReplyWrap" class="custom-reply-wrap hidden">
+          <input
+            type="text"
+            id="customReplyInput"
+            placeholder="AI への返答・追加指示を入力（任意）"
+          />
+        </div>
+        <div class="confirm-buttons">
+          <button id="confirmApproveBtn" class="btn btn-primary">許可して続行</button>
+          <button id="confirmSkipBtn" class="btn btn-secondary">この手をスキップ</button>
+          <button id="confirmStopBtn" class="btn btn-danger">中断</button>
+        </div>
+      </section>
+
+      <section id="resultBanner" class="result-banner hidden"></section>
+
+      <section class="timeline-section">
+        <div class="timeline-header">
+          <h2>実行ログ</h2>
+          <span id="stepCounter" class="step-counter">待機中</span>
+        </div>
+        <div id="timelineList" class="timeline-list">
+          <div class="empty-state">
+            タスクを入力して「実行開始」を押すと、Gemini Nano が現在のタブ画面を観察しながら操作を実行します。
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="imageModal" class="image-modal hidden">
+    <div class="image-modal-backdrop" id="imageModalBackdrop"></div>
+    <div class="image-modal-content">
+      <button id="closeImageModalBtn" class="modal-close-btn" aria-label="閉じる">✕</button>
+      <img id="modalPreviewImg" alt="注釈付きスクリーンショット拡大表示" />
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

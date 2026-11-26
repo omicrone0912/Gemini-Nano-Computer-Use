@@ -1,0 +1,10 @@
+{
+  "name": "gemini-nano-computer-use",
+  "version": "1.0.0",
+  "description": "Chrome Built-in AI (Gemini Nano) を用いてブラウザ画面を認識・操作する Computer Use Chrome 拡張機能",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,138 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { AgentController } from '../shared/agent-controller.js';
+import { EXECUTION_MODES } from '../shared/constants.js';
+
+test('AgentController executes multi-step task until done', async () => {
+  const executed = [];
+  const events = [];
+  let stepCount = 0;
+
+  const mockNano = {
+    async initialize() {
+      return { multimodal: false, apiVariant: 'LanguageModel' };
+    },
+    async decideAction() {
+      stepCount += 1;
+      if (stepCount === 1) {
+        return {
+          action: { thought: '入力欄へ記入', action: 'type', elementId: 1, text: 'Chrome', clear: true },
+          usage: {}
+        };
+      }
+      return {
+        action: { thought: '完了', action: 'done', message: '検索入力を完了しました。' },
+        usage: {}
+      };
+    }
+  };
+
+  const controller = new AgentController({
+    nanoClient: mockNano,
+    async observe() {
+      return {
+        snapshot: {
+          restricted: false,
+          url: 'https://example.com',
+          title: 'Example',
+          elements: [{ id: 1, tag: 'input', inputType: 'text', label: '検索' }]
+        },
+        image: null
+      };
+    },
+    async executeAction(action) {
+      executed.push(action);
+      return { ok: true, detail: 'ok' };
+    },
+    async requestConfirmation() {
+      throw new Error('安全操作では確認モーダルを開かない想定');
+    },
+    onEvent(ev) {
+      events.push(ev.type);
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '検索する',
+    settings: { maxSteps: 5, executionMode: EXECUTION_MODES.AUTO_SAFE, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'completed');
+  assert.equal(executed.length, 1);
+  assert.equal(executed[0].action, 'type');
+  assert.ok(events.includes('run_finished'));
+});
+
+test('AgentController requests confirmation for sensitive click and aborts when declined', async () => {
+  let confirmCalls = 0;
+  let executedCount = 0;
+
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction() {
+        return {
+          action: { thought: '購入確定を押す', action: 'click', elementId: 1 },
+          usage: {}
+        };
+      }
+    },
+    async observe() {
+      return {
+        snapshot: {
+          restricted: false,
+          url: 'https://shop.example.com',
+          title: 'Checkout',
+          elements: [{ id: 1, tag: 'button', label: '購入を確定する' }]
+        }
+      };
+    },
+    async executeAction() {
+      executedCount += 1;
+      return { ok: true };
+    },
+    async requestConfirmation() {
+      confirmCalls += 1;
+      return { approved: false, stop: true };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '購入する',
+    settings: { maxSteps: 3, executionMode: EXECUTION_MODES.AUTO_SAFE, actionDelayMs: 0 }
+  });
+
+  assert.equal(confirmCalls, 1);
+  assert.equal(executedCount, 0);
+  assert.equal(outcome.status, 'stopped');
+});
+
+test('AgentController stop() cancels an active run', async () => {
+  let controller;
+  controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction() {
+        controller.stop();
+        return { action: { thought: 'wait', action: 'wait', ms: 1000 }, usage: {} };
+      }
+    },
+    async observe() {
+      return { snapshot: { restricted: false, url: 'https://example.com', elements: [] } };
+    },
+    async executeAction() {
+      return { ok: true };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: 'テスト',
+    settings: { maxSteps: 5, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'stopped');
+});

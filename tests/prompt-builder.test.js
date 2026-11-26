@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { buildStepPrompt } from '../shared/prompt-builder.js';
+
+test('buildStepPrompt includes formatted elements, masked password, and image hint', () => {
+  const prompt = buildStepPrompt({
+    goal: '検索する',
+    stepIndex: 2,
+    maxSteps: 10,
+    hasImage: true,
+    loopWarning: '同じ操作を繰り返さないでください',
+    snapshot: {
+      restricted: false,
+      url: 'https://example.com',
+      title: 'Example Page',
+      scroll: { x: 0, y: 120, maxY: 800 },
+      elements: [
+        { id: 1, tag: 'input', inputType: 'text', label: '検索', value: 'AI' },
+        { id: 2, tag: 'input', inputType: 'password', label: 'PW', value: 'hunter2' },
+        { id: 3, tag: 'button', label: '送信' }
+      ],
+      textExcerpt: 'テストページ本文'
+    },
+    history: [
+      { step: 1, action: { action: 'type', elementId: 1, text: 'AI' }, result: { ok: true } }
+    ]
+  });
+
+  assert.match(prompt, /赤枠番号バッジ/);
+  assert.match(prompt, /\[1\] input type=text "検索" value="AI"/);
+  assert.match(prompt, /\[2\] input type=password "PW" value="\*\*\*"/);
+  assert.match(prompt, /同じ操作を繰り返さないでください/);
+  assert.match(prompt, /Step 1: type #1/);
+});
+
+test('buildStepPrompt guides navigation on restricted pages', () => {
+  const prompt = buildStepPrompt({
+    goal: 'ニュースを見る',
+    snapshot: { restricted: true, url: 'chrome://newtab/', title: '新しいタブ', elements: [] }
+  });
+
+  assert.match(prompt, /Chrome の保護領域/);
+  assert.match(prompt, /navigate/);
+});

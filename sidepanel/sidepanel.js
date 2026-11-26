@@ -17,6 +17,8 @@ import {
   parseOfficePlaybookBytes
 } from '../shared/office-parser.js';
 import {
+  PLAYBOOK_CONVERTER_SKILL_FILENAME,
+  PLAYBOOK_CONVERTER_SKILL_MARKDOWN,
   PLAYBOOK_DOCX_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_MARKDOWN,
@@ -77,6 +79,8 @@ const els = {
   uploadPlaybookBtn: document.getElementById('uploadPlaybookBtn'),
   downloadPlaybookDocxBtn: document.getElementById('downloadPlaybookDocxBtn'),
   downloadPlaybookTemplateBtn: document.getElementById('downloadPlaybookTemplateBtn'),
+  downloadSkillPromptLink: document.getElementById('downloadSkillPromptLink'),
+  copySkillPromptBtn: document.getElementById('copySkillPromptBtn'),
   playbookFileInput: document.getElementById('playbookFileInput'),
   playbookDropZone: document.getElementById('playbookDropZone'),
   playbookStatusBanner: document.getElementById('playbookStatusBanner'),
@@ -1250,6 +1254,12 @@ async function downloadDocxPlaybookTemplate() {
   await downloadBlobFile(blob, PLAYBOOK_DOCX_TEMPLATE_FILENAME, 'Word (.docx) テンプレート');
 }
 
+async function downloadSkillPrompt(e) {
+  e?.preventDefault();
+  const blob = new Blob([PLAYBOOK_CONVERTER_SKILL_MARKDOWN], { type: 'text/markdown;charset=utf-8' });
+  await downloadBlobFile(blob, PLAYBOOK_CONVERTER_SKILL_FILENAME, 'Gemini変換用プロンプト');
+}
+
 // Playbook listeners
 els.uploadPlaybookBtn.addEventListener('click', () => {
   els.playbookFileInput.value = '';
@@ -1268,6 +1278,15 @@ els.playbookFileInput.addEventListener('change', async (e) => {
 
 els.downloadPlaybookDocxBtn.addEventListener('click', downloadDocxPlaybookTemplate);
 els.downloadPlaybookTemplateBtn.addEventListener('click', downloadPlaybookTemplate);
+els.downloadSkillPromptLink.addEventListener('click', downloadSkillPrompt);
+els.copySkillPromptBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(PLAYBOOK_CONVERTER_SKILL_MARKDOWN);
+    showPlaybookStatus('Gemini変換用プロンプト (SKILL.md) をクリップボードにコピーしました。', 'completed');
+  } catch {
+    showPlaybookStatus('クリップボードへのコピーに失敗しました。', 'error');
+  }
+});
 
 els.clearPlaybookBtn.addEventListener('click', () => {
   loadedPlaybook = null;

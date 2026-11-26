@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
+  PLAYBOOK_CONVERTER_SKILL_FILENAME,
+  PLAYBOOK_CONVERTER_SKILL_MARKDOWN,
   PLAYBOOK_DOCX_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_FILENAME,
   PLAYBOOK_TEMPLATE_MARKDOWN,
@@ -70,4 +73,51 @@ test('parsePlaybookContent preserves embedded images and selectRelevantPlaybookI
   const selected = selectRelevantPlaybookImages(pb, 2, 1);
   assert.equal(selected.length, 1);
   assert.equal(selected[0].name, 'b.png');
+});
+
+test('PLAYBOOK_CONVERTER_SKILL_MARKDOWN defines Gemini Web SKILL.md format and matches docs/SKILL.md', () => {
+  assert.equal(PLAYBOOK_CONVERTER_SKILL_FILENAME, 'SKILL.md');
+  assert.match(PLAYBOOK_CONVERTER_SKILL_MARKDOWN, /^---\r?\nname:\s*gemini-nano-playbook-converter/);
+  assert.match(PLAYBOOK_CONVERTER_SKILL_MARKDOWN, /\ndescription:\s*.+/);
+  assert.match(PLAYBOOK_CONVERTER_SKILL_MARKDOWN, /2,000文字以内/);
+
+  const requiredActions = [
+    '[navigate]',
+    '[click]',
+    '[type]',
+    '[select]',
+    '[press_key]',
+    '[scroll]',
+    '[wait]',
+    '[go_back]',
+    '[go_forward]',
+    '[open_tab]',
+    '[switch_tab]',
+    '[close_tab]',
+    '[download_page_pdf]',
+    '[read_pdf]',
+    '[ask_user]',
+    '[done]'
+  ];
+  for (const tag of requiredActions) {
+    assert.ok(PLAYBOOK_CONVERTER_SKILL_MARKDOWN.includes(tag), `Missing action tag in SKILL.md: ${tag}`);
+  }
+
+  const requiredHeadings = [
+    '# 手順書タイトル:',
+    '## 目的',
+    '## 開始URL',
+    '## 前提条件・実行ルール（必守）',
+    '## 実行ステップ',
+    '## 確認ポイント（完了条件）',
+    '## 例外時の対応',
+    '## 出力形式（完了メッセージ）'
+  ];
+  for (const heading of requiredHeadings) {
+    assert.ok(PLAYBOOK_CONVERTER_SKILL_MARKDOWN.includes(heading), `Missing required heading: ${heading}`);
+  }
+
+  const docsSkill = readFileSync('docs/SKILL.md', 'utf8').replace(/\r\n/g, '\n').trim();
+  const codeSkill = PLAYBOOK_CONVERTER_SKILL_MARKDOWN.replace(/\r\n/g, '\n').trim();
+  assert.equal(docsSkill, codeSkill);
 });

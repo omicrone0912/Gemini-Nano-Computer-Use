@@ -28,6 +28,7 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 - **手順書（SOP）アップロード ＆ AI 可読テンプレートダウンロード**
   - **Office 文書（`.docx` / `.pptx` / `.xlsx`）＆ 画像抽出対応**: Word・PowerPoint・Excel 等の手順書をアップロードすると、テキストとともに貼り付けられたスクリーンショット画像をローカルで抽出し、Gemini Nano が視覚的に参照しながら操作できます（`.md` / `.txt` / `.json` / `.pdf` にも対応）。
   - **Word (`.docx`) / Markdown テンプレートダウンロード**: スクリーンショットをそのまま貼り付けられる Word テンプレート（`gemini-nano-playbook-template.docx`）と Markdown テンプレート（`gemini-nano-playbook-template.md`）をワンクリックでダウンロードできます。
+  - **Gemini Web 版用 変換スキル (`SKILL.md`) ダウンロード**: 既存のフォーマット化されていない手順書を Google Gemini（Web 版）に読み込ませるだけで Gemini Nano 用の構造化手順書へ変換できる変換スキル（[docs/SKILL.md](docs/SKILL.md)）をサイドパネル内リンクからダウンロード／コピーできます。
   - **厳格手順書モード**: 手順書が適用されている場合は手順書の記載通りに実行し、要素が見つからない・画面が異なる・判断に迷う不明点が出た場合は推測で進めず必ず `ask_user` で人間に指示を仰ぎます。
 - **フローチャート設計タブ & Nano Flow Studio（Google Workspace Studio 風エディタ）**
   - **フロー設計タブ**: サイドパネル上の「フロー設計」タブでローカル保存済みプリセットを一覧・プレビューし、ワンクリックで適用（呼出）または即実行できます（AI 操作画面の上部セレクトからもワンクリック呼出可能）。
@@ -83,6 +84,8 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   └── agent-controller.js       # Observe -> Think -> Guard -> Act 制御ループ
 ├── scripts/
 │   └── generate-icons.mjs        # 拡張機能 PNG アイコン生成スクリプト
+├── docs/
+│   └── SKILL.md                  # Gemini (Web版) 用の未整形手順書→構造化手順書変換スキル
 └── tests/                        # Node 標準テストランナーによるユニットテスト
 ```
 

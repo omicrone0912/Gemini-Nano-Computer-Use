@@ -20,8 +20,6 @@ import {
   PLAYBOOK_CONVERTER_SKILL_FILENAME,
   PLAYBOOK_CONVERTER_SKILL_MARKDOWN,
   PLAYBOOK_DOCX_TEMPLATE_FILENAME,
-  PLAYBOOK_TEMPLATE_FILENAME,
-  PLAYBOOK_TEMPLATE_MARKDOWN,
   parsePlaybookContent
 } from '../shared/playbook.js';
 import {
@@ -78,7 +76,6 @@ const els = {
   playbookSummaryBadge: document.getElementById('playbookSummaryBadge'),
   uploadPlaybookBtn: document.getElementById('uploadPlaybookBtn'),
   downloadPlaybookDocxBtn: document.getElementById('downloadPlaybookDocxBtn'),
-  downloadPlaybookTemplateBtn: document.getElementById('downloadPlaybookTemplateBtn'),
   downloadSkillPromptLink: document.getElementById('downloadSkillPromptLink'),
   copySkillPromptBtn: document.getElementById('copySkillPromptBtn'),
   playbookFileInput: document.getElementById('playbookFileInput'),
@@ -1241,11 +1238,6 @@ async function downloadBlobFile(blob, filename, label) {
   }
 }
 
-async function downloadPlaybookTemplate() {
-  const blob = new Blob([PLAYBOOK_TEMPLATE_MARKDOWN], { type: 'text/markdown;charset=utf-8' });
-  await downloadBlobFile(blob, PLAYBOOK_TEMPLATE_FILENAME, 'Markdown テンプレート');
-}
-
 async function downloadDocxPlaybookTemplate() {
   const docxBytes = generateDocxPlaybookTemplate();
   const blob = new Blob([docxBytes], {
@@ -1277,7 +1269,6 @@ els.playbookFileInput.addEventListener('change', async (e) => {
 });
 
 els.downloadPlaybookDocxBtn.addEventListener('click', downloadDocxPlaybookTemplate);
-els.downloadPlaybookTemplateBtn.addEventListener('click', downloadPlaybookTemplate);
 els.downloadSkillPromptLink.addEventListener('click', downloadSkillPrompt);
 els.copySkillPromptBtn.addEventListener('click', async () => {
   try {

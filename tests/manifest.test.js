@@ -13,3 +13,9 @@ test('manifest.json enforces strict local-only CSP and required PDF permissions'
   assert.ok(manifest.permissions.includes('debugger'));
   assert.ok(manifest.permissions.includes('downloads'));
 });
+
+test('sidepanel.html contains no inline style attributes or style tags under style-src self', () => {
+  const html = readFileSync('sidepanel/sidepanel.html', 'utf8');
+  assert.doesNotMatch(html, /\sstyle\s*=/i);
+  assert.doesNotMatch(html, /<style[\s>]/i);
+});

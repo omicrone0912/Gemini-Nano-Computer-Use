@@ -166,7 +166,7 @@ function collectSettings() {
 function setDownloadProgress(percent, visible = true) {
   els.downloadProgressWrap.classList.toggle('hidden', !visible);
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
-  els.downloadProgressBar.style.width = `${clamped}%`;
+  els.downloadProgressBar.value = clamped;
   els.downloadProgressLabel.textContent = `${clamped}%`;
 }
 

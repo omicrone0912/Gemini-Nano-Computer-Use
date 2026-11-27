@@ -661,16 +661,27 @@ function getBgPdfContext() {
 function createOffscreenNanoAdapter() {
   let cachedInit = { multimodal: false, apiVariant: 'OffscreenLanguageModel' };
   return {
-    async initialize({ useVision, systemPrompt }) {
+    async initialize({
+      useVision,
+      systemPrompt,
+      provider = 'auto',
+      useQwenFallback = false,
+      qwenModel,
+      qwenEndpoint
+    }) {
       await ensureOffscreenDocument();
       const res = await chrome.runtime.sendMessage({
         target: 'offscreen',
         type: MSG_TYPES.OFFSCREEN_NANO_INIT,
         useVision,
-        systemPrompt: systemPrompt || SYSTEM_PROMPT
+        systemPrompt: systemPrompt || SYSTEM_PROMPT,
+        provider,
+        useQwenFallback,
+        qwenModel,
+        qwenEndpoint
       });
       if (!res?.ok) {
-        throw new Error(res?.error || 'Offscreen Gemini Nano の初期化に失敗しました。');
+        throw new Error(res?.error || 'Offscreen AI の初期化に失敗しました。');
       }
       cachedInit = { multimodal: Boolean(res.multimodal), apiVariant: res.apiVariant };
       return cachedInit;
@@ -955,7 +966,11 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
   try {
     await nanoAdapter.initialize({
       useVision: merged.useVision,
-      systemPrompt: SYSTEM_PROMPT
+      systemPrompt: SYSTEM_PROMPT,
+      provider: merged.provider || 'auto',
+      useQwenFallback: Boolean(merged.useQwenFallback),
+      qwenModel: merged.qwenModel,
+      qwenEndpoint: merged.qwenEndpoint
     });
   } catch (error) {
     return {

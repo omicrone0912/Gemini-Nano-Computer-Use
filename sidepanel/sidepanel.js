@@ -6,6 +6,13 @@ import {
   MSG_TYPES
 } from '../shared/constants.js';
 import { NanoClient } from '../shared/nano-client.js';
+import {
+  QWEN_DEFAULT_ENDPOINT,
+  QWEN_DEFAULT_MODEL,
+  QwenLocalClient,
+  generateQwenPowerShellOneLiner,
+  generateQwenWindowsInstallerBat
+} from '../shared/qwen-client.js';
 import { isSupportedViewerUrl } from '../shared/media-viewer.js';
 import {
   base64ToUint8Array,
@@ -49,6 +56,18 @@ const els = {
   downloadProgressWrap: document.getElementById('downloadProgressWrap'),
   downloadProgressBar: document.getElementById('downloadProgressBar'),
   downloadProgressLabel: document.getElementById('downloadProgressLabel'),
+  useQwenFallbackCheckbox: document.getElementById('useQwenFallbackCheckbox'),
+  qwenPanel: document.getElementById('qwenPanel'),
+  qwenModelSelect: document.getElementById('qwenModelSelect'),
+  qwenStatusDot: document.getElementById('qwenStatusDot'),
+  qwenStatusText: document.getElementById('qwenStatusText'),
+  installQwenBtn: document.getElementById('installQwenBtn'),
+  copyQwenCmdBtn: document.getElementById('copyQwenCmdBtn'),
+  recheckQwenBtn: document.getElementById('recheckQwenBtn'),
+  qwenProgressWrap: document.getElementById('qwenProgressWrap'),
+  qwenProgressBar: document.getElementById('qwenProgressBar'),
+  qwenProgressLabel: document.getElementById('qwenProgressLabel'),
+  qwenInstallHint: document.getElementById('qwenInstallHint'),
   setupGuide: document.getElementById('setupGuide'),
   flagsList: document.getElementById('flagsList'),
   goalInput: document.getElementById('goalInput'),
@@ -115,6 +134,10 @@ const els = {
 };
 
 const nanoClient = new NanoClient(globalThis);
+const qwenClient = new QwenLocalClient({
+  endpoint: QWEN_DEFAULT_ENDPOINT,
+  model: QWEN_DEFAULT_MODEL
+});
 const presetStore = new WorkflowPresetStore(chrome.storage?.local);
 const stepCards = new Map();
 let flowPresets = [];
@@ -124,6 +147,9 @@ let backgroundRunActive = false;
 let fgWorkspaceActive = false;
 let activeBgConfirmCleanup = null;
 let availabilityState = null;
+let qwenAvailability = null;
+let qwenPollTimer = null;
+let qwenPollStartedAt = 0;
 let loadedPdf = null;
 let loadedPlaybook = null;
 let activeMainTab = 'agent';
@@ -201,6 +227,13 @@ async function loadSettings() {
     els.allowBackgroundCheckbox.checked = saved.allowBackgroundExecution !== false;
     els.allowMultiTabCheckbox.checked = saved.allowMultiTab !== false;
     els.useBuiltInViewerCheckbox.checked = saved.useBuiltInViewer !== false;
+    els.useQwenFallbackCheckbox.checked = Boolean(saved.useQwenFallback);
+    els.qwenModelSelect.value = saved.qwenModel || QWEN_DEFAULT_MODEL;
+    qwenClient.configure({
+      endpoint: saved.qwenEndpoint || QWEN_DEFAULT_ENDPOINT,
+      model: els.qwenModelSelect.value
+    });
+    els.qwenPanel.classList.toggle('hidden', !els.useQwenFallbackCheckbox.checked);
   } catch {
     // Ignore storage error
   }
@@ -239,7 +272,10 @@ function collectSettings() {
     useVision: Boolean(els.useVisionCheckbox.checked),
     allowBackgroundExecution: Boolean(els.allowBackgroundCheckbox.checked),
     allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked),
-    useBuiltInViewer: Boolean(els.useBuiltInViewerCheckbox.checked)
+    useBuiltInViewer: Boolean(els.useBuiltInViewerCheckbox.checked),
+    useQwenFallback: Boolean(els.useQwenFallbackCheckbox.checked),
+    qwenModel: els.qwenModelSelect.value || QWEN_DEFAULT_MODEL,
+    qwenEndpoint: QWEN_DEFAULT_ENDPOINT
   };
 }
 
@@ -250,13 +286,88 @@ function setDownloadProgress(percent, visible = true) {
   els.downloadProgressLabel.textContent = `${clamped}%`;
 }
 
+function setQwenDownloadProgress(percent, visible = true) {
+  els.qwenProgressWrap.classList.toggle('hidden', !visible);
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  els.qwenProgressBar.value = clamped;
+  els.qwenProgressLabel.textContent = `${clamped}%`;
+}
+
+function stopQwenPoll() {
+  if (qwenPollTimer) {
+    clearInterval(qwenPollTimer);
+    qwenPollTimer = null;
+  }
+}
+
+function startQwenPoll() {
+  stopQwenPoll();
+  qwenPollStartedAt = Date.now();
+  qwenPollTimer = setInterval(async () => {
+    if (!els.useQwenFallbackCheckbox.checked || Date.now() - qwenPollStartedAt > 5 * 60 * 1000) {
+      stopQwenPoll();
+      return;
+    }
+    await refreshAvailability();
+    if (qwenAvailability?.status === 'available') {
+      stopQwenPoll();
+    }
+  }, 4000);
+}
+
+async function refreshQwenAvailability() {
+  const enabled = Boolean(els.useQwenFallbackCheckbox.checked);
+  els.qwenPanel.classList.toggle('hidden', !enabled);
+  if (!enabled) {
+    qwenAvailability = null;
+    stopQwenPoll();
+    return null;
+  }
+
+  qwenClient.configure({
+    endpoint: QWEN_DEFAULT_ENDPOINT,
+    model: els.qwenModelSelect.value || QWEN_DEFAULT_MODEL
+  });
+
+  els.qwenStatusDot.className = 'status-dot';
+  els.qwenStatusText.textContent = 'ローカル Ollama / Qwen 2.5 VL を確認中...';
+
+  qwenAvailability = await qwenClient.checkAvailability();
+  const { status, message, model } = qwenAvailability;
+  els.qwenStatusText.textContent = message;
+
+  if (status === 'available') {
+    els.qwenStatusDot.className = 'status-dot ok';
+    els.installQwenBtn.textContent = `導入済み (${model})`;
+    els.installQwenBtn.disabled = true;
+    els.qwenInstallHint.classList.add('hidden');
+    stopQwenPoll();
+  } else if (status === 'downloadable') {
+    els.qwenStatusDot.className = 'status-dot';
+    els.installQwenBtn.textContent = `1ステップで取得 (${model})`;
+    els.installQwenBtn.disabled = false;
+    els.qwenInstallHint.classList.add('hidden');
+  } else {
+    els.qwenStatusDot.className = 'status-dot error';
+    els.installQwenBtn.textContent = '1ステップ導入 (.bat) をDL';
+    els.installQwenBtn.disabled = false;
+  }
+  return qwenAvailability;
+}
+
 async function refreshAvailability() {
   els.statusDot.className = 'status-dot';
   els.statusText.textContent = 'Gemini Nano の利用可否を確認中...';
   els.downloadModelBtn.classList.add('hidden');
 
-  availabilityState = await nanoClient.checkAvailability();
+  const [nanoRes, qwenRes] = await Promise.all([
+    nanoClient.checkAvailability(),
+    refreshQwenAvailability()
+  ]);
+
+  availabilityState = nanoRes;
   const { status, multimodal, message } = availabilityState;
+  const qwenReady = Boolean(els.useQwenFallbackCheckbox.checked && qwenRes?.status === 'available');
 
   if (status === 'available') {
     els.statusDot.classList.add('ok');
@@ -265,9 +376,18 @@ async function refreshAvailability() {
     if (!multimodal) {
       els.useVisionCheckbox.checked = false;
     }
+  } else if (qwenReady) {
+    els.statusDot.classList.add('ok');
+    els.statusText.textContent = `Qwen 2.5 VL (${qwenClient.model} / ローカル) が利用可能です（Gemini Nano 代替）`;
+    els.setupGuide.classList.add('hidden');
   } else if (status === 'downloadable' || status === 'downloading') {
     els.statusText.textContent = message;
     els.downloadModelBtn.classList.remove('hidden');
+  } else if (els.useQwenFallbackCheckbox.checked) {
+    els.statusDot.className = 'status-dot';
+    els.statusText.textContent =
+      'Gemini Nano が利用できません。下の Qwen 2.5 VL「1ステップ導入」からセットアップしてください。';
+    els.setupGuide.classList.add('hidden');
   } else {
     els.statusDot.classList.add('error');
     els.statusText.textContent = message;
@@ -859,6 +979,8 @@ function setRunningUi(isRunning) {
   els.allowBackgroundCheckbox.disabled = isRunning;
   els.allowMultiTabCheckbox.disabled = isRunning;
   els.useBuiltInViewerCheckbox.disabled = isRunning;
+  els.useQwenFallbackCheckbox.disabled = isRunning;
+  els.qwenModelSelect.disabled = isRunning;
 }
 
 async function startRun() {
@@ -878,7 +1000,12 @@ async function startRun() {
 
   await saveSettings();
   await persistPanelState();
-  const settings = collectSettings();
+  const baseSettings = collectSettings();
+  const useQwenNow = availabilityState?.status !== 'available' && baseSettings.useQwenFallback;
+  const settings = {
+    ...baseSettings,
+    provider: useQwenNow ? 'qwen_local' : (baseSettings.useQwenFallback ? 'auto' : 'nano')
+  };
   const tab = await getActiveTab();
   clearTimelineUiOnly();
 
@@ -944,8 +1071,9 @@ async function startRun() {
     els.workspaceBar.classList.add('hidden');
   }
 
+  qwenClient.configure({ endpoint: settings.qwenEndpoint, model: settings.qwenModel });
   activeController = new AgentController({
-    nanoClient,
+    nanoClient: useQwenNow ? qwenClient : nanoClient,
     observe: observeCurrentTab,
     executeAction: executeTabAction,
     requestConfirmation: requestUserConfirmation,
@@ -1021,6 +1149,90 @@ els.useVisionCheckbox.addEventListener('change', saveSettings);
 els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
 els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
 els.useBuiltInViewerCheckbox.addEventListener('change', saveSettings);
+
+els.useQwenFallbackCheckbox.addEventListener('change', async () => {
+  await saveSettings();
+  await refreshAvailability();
+});
+
+els.qwenModelSelect.addEventListener('change', async () => {
+  await saveSettings();
+  await refreshAvailability();
+});
+
+els.recheckQwenBtn.addEventListener('click', refreshAvailability);
+
+els.copyQwenCmdBtn.addEventListener('click', async () => {
+  const model = els.qwenModelSelect.value || QWEN_DEFAULT_MODEL;
+  const cmd = generateQwenPowerShellOneLiner(model);
+  try {
+    await navigator.clipboard.writeText(cmd);
+    els.qwenInstallHint.textContent =
+      'PowerShell 用の1行導入コマンドをコピーしました。PowerShell に貼り付けて Enter を押すだけで Ollama と Qwen 2.5 VL の導入が完了します。';
+    els.qwenInstallHint.classList.remove('hidden');
+    startQwenPoll();
+  } catch {
+    els.qwenInstallHint.textContent = 'クリップボードへのコピーに失敗しました。';
+    els.qwenInstallHint.classList.remove('hidden');
+  }
+});
+
+els.installQwenBtn.addEventListener('click', async () => {
+  const model = els.qwenModelSelect.value || QWEN_DEFAULT_MODEL;
+  els.installQwenBtn.disabled = true;
+
+  try {
+    const current = qwenAvailability || (await qwenClient.checkAvailability());
+    if (current?.status === 'downloadable') {
+      setQwenDownloadProgress(0, true);
+      els.qwenStatusDot.className = 'status-dot';
+      els.qwenStatusText.textContent = `${model} をダウンロードしています...`;
+      await qwenClient.installModel({
+        model,
+        onDownloadProgress: (pct, stepLabel) => {
+          setQwenDownloadProgress(pct, true);
+          if (stepLabel) {
+            els.qwenStatusText.textContent = `${model} 取得中 (${pct}%): ${stepLabel}`;
+          }
+        }
+      });
+      setQwenDownloadProgress(100, false);
+      await refreshAvailability();
+      return;
+    }
+
+    const batSource = generateQwenWindowsInstallerBat(model);
+    const blob = new Blob([batSource], { type: 'application/x-bat;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(blob);
+    try {
+      if (chrome.downloads?.download) {
+        await chrome.downloads.download({
+          url: blobUrl,
+          filename: 'install-qwen25vl.bat',
+          saveAs: false
+        });
+      } else {
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = 'install-qwen25vl.bat';
+        a.click();
+      }
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    }
+
+    els.qwenInstallHint.textContent =
+      `「install-qwen25vl.bat」をダウンロードしました。ダブルクリックで実行すると Ollama と ${model} の設定・取得が自動で完了します（完了すると自動で切り替わります）。`;
+    els.qwenInstallHint.classList.remove('hidden');
+    startQwenPoll();
+  } catch (error) {
+    setQwenDownloadProgress(0, false);
+    els.qwenStatusDot.className = 'status-dot error';
+    els.qwenStatusText.textContent = `導入エラー: ${error?.message || error}`;
+  } finally {
+    els.installQwenBtn.disabled = qwenAvailability?.status === 'available';
+  }
+});
 
 els.goalInput.addEventListener('input', schedulePersistPanelState);
 els.goalInput.addEventListener('change', persistPanelState);

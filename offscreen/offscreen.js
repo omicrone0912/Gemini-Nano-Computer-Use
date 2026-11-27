@@ -1,8 +1,10 @@
 import { MSG_TYPES } from '../shared/constants.js';
 import { NanoClient } from '../shared/nano-client.js';
+import { QwenLocalClient } from '../shared/qwen-client.js';
 import { annotateScreenshot } from '../sidepanel/annotator.js';
 
 const nanoClient = new NanoClient(globalThis);
+let activeClient = nanoClient;
 let activeAbortController = null;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -14,18 +16,52 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     try {
       switch (message.type) {
         case MSG_TYPES.OFFSCREEN_NANO_INIT: {
-          const result = await nanoClient.initialize({
-            useVision: Boolean(message.useVision),
-            systemPrompt: message.systemPrompt,
-            onDownloadProgress: (percent) => {
-              chrome.runtime
-                .sendMessage({
-                  type: MSG_TYPES.AGENT_EVENT,
-                  event: { type: 'model_download_progress', percent, timestamp: Date.now() }
-                })
-                .catch(() => {});
+          const onProgress = (percent) => {
+            chrome.runtime
+              .sendMessage({
+                type: MSG_TYPES.AGENT_EVENT,
+                event: { type: 'model_download_progress', percent, timestamp: Date.now() }
+              })
+              .catch(() => {});
+          };
+
+          let result;
+          if (message.provider === 'qwen_local') {
+            await nanoClient.destroy().catch(() => {});
+            const qwenClient = new QwenLocalClient({
+              endpoint: message.qwenEndpoint,
+              model: message.qwenModel
+            });
+            result = await qwenClient.initialize({
+              useVision: Boolean(message.useVision),
+              systemPrompt: message.systemPrompt,
+              onDownloadProgress: onProgress
+            });
+            activeClient = qwenClient;
+          } else {
+            try {
+              result = await nanoClient.initialize({
+                useVision: Boolean(message.useVision),
+                systemPrompt: message.systemPrompt,
+                onDownloadProgress: onProgress
+              });
+              activeClient = nanoClient;
+            } catch (nanoError) {
+              if (!message.useQwenFallback) {
+                throw nanoError;
+              }
+              const qwenClient = new QwenLocalClient({
+                endpoint: message.qwenEndpoint,
+                model: message.qwenModel
+              });
+              result = await qwenClient.initialize({
+                useVision: Boolean(message.useVision),
+                systemPrompt: message.systemPrompt,
+                onDownloadProgress: onProgress
+              });
+              activeClient = qwenClient;
             }
-          });
+          }
           sendResponse({ ok: true, ...result });
           break;
         }
@@ -53,7 +89,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             }
           }
 
-          const decision = await nanoClient.decideAction({
+          const decision = await activeClient.decideAction({
             promptText: message.promptText,
             image,
             referenceImages: Array.isArray(message.referenceImages) ? message.referenceImages : [],
@@ -84,7 +120,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             activeAbortController.abort();
             activeAbortController = null;
           }
-          await nanoClient.destroy();
+          await activeClient.destroy();
+          activeClient = nanoClient;
           sendResponse({ ok: true });
           break;
         }

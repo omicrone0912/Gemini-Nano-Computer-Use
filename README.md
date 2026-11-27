@@ -6,8 +6,9 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 
 ## 主な特徴
 
-- **完全ローカル推論（Gemini Nano / Prompt API）**
+- **完全ローカル推論（Gemini Nano / 代替 Qwen 2.5 VL 対応）**
   - `LanguageModel` API（マルチモーダル対応時はスクリーンショット画像＋DOM、非対応環境では DOM テキストのみへ自動フォールバック）を利用します。
+  - **Qwen 2.5 VL（ローカル Ollama）フォールバック & 1ステップ導入**: Gemini Nano が使えない環境向けに、上部のトグルをオンにするだけでローカルの **Qwen 2.5 VL (`3b` / `7b`)** へ切り替えられます。Ollama 起動済みならサイドパネル上からワンクリックでモデルを取得でき、未導入時も `install-qwen25vl.bat`（[scripts/install-qwen25vl.bat](scripts/install-qwen25vl.bat) / PowerShell ワンライナー）により 1 ステップで導入完了できます。
   - `responseConstraint`（JSON Schema 制約）＋堅牢な JSON 抽出パーサーにより、安定したアクション出力を実現しています。
 - **Set-of-Mark（画面注釈）＋ DOM インスペクターのハイブリッド認識**
   - ページ内の可視インタラクティブ要素（Open Shadow DOM 含む）に番号 ID `[1]`, `[2]`, ... を付与し、タブのスクリーンショットにも赤枠バッジを描画してモデルへ渡します。
@@ -42,8 +43,8 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 
 この拡張機能は、入力したプロンプトや閲覧中の画面情報・操作履歴・読み込んだ PDF データが外部サーバーへ送信されたり、AI モデルの学習に利用されたりしない設計になっています。
 
-- **完全オンデバイス推論**: 推論には Google Chrome 内蔵の `LanguageModel` API（Gemini Nano）のみを使用し、外部 AI API への送信やテレメトリ収集は一切行いません。
-- **CSP による外部通信の強制遮断**: [manifest.json](manifest.json) の `content_security_policy.extension_pages` に `connect-src 'none'` を設定し、拡張機能ページ（サイドパネル／Service Worker／Offscreen Document）からの外部ネットワーク通信をブラウザレベルで禁止しています（画面注釈表示やローカル PDF プレビュー用の `data:` / `blob:` のみ許可）。
+- **完全オンデバイス／ローカルループバック推論**: 推論には Google Chrome 内蔵の `LanguageModel` API（Gemini Nano）またはローカル PC 上の Ollama（Qwen 2.5 VL）のみを使用し、外部 AI API への送信やテレメトリ収集は一切行いません。
+- **CSP による外部通信の強制遮断**: [manifest.json](manifest.json) の `content_security_policy.extension_pages` に `connect-src http://127.0.0.1:11434 http://localhost:11434` のみを許可し、外部インターネットサーバーへの通信をブラウザレベルで禁止しています（画面注釈表示やローカルメディアプレビュー用の `data:` / `blob:` のみ許可）。
 - **追加権限について**: 画面の PDF 生成 (`Page.printToPDF`) とローカル保存・履歴参照のために `debugger` と `downloads` 権限、バックグラウンド推論とタブグループ管理のために `offscreen` と `tabGroups` 権限を使用しますが、すべての処理はブラウザ内およびローカルディスク上で完結します。
 - **ローカル限定ストレージとメモリ管理**: 設定はクラウド同期されない `chrome.storage.local` のみに保存します。操作中の DOM 情報・スクリーンショット・プロンプト履歴はメモリ上のみで扱い、各ステップ終了時に推論セッションを `destroy()` で破棄します。
 - **機密情報の保護**: `type="password"` の入力値はプロンプト生成時に `***` へマスクされ、パスワード入力・フォーム送信・購入・削除などの操作前には確認カードでユーザー承認を求めます。
@@ -84,6 +85,7 @@ Google Chrome に内蔵されたローカル AI モデル **Gemini Nano**（Buil
 │   ├── safety.js                 # URL 検証・危険操作検出・ループ検出
 │   ├── prompt-builder.js         # システム/ステッププロンプト生成
 │   ├── nano-client.js            # Chrome Prompt API (Gemini Nano) ラッパー
+│   ├── qwen-client.js            # ローカル Ollama (Qwen 2.5 VL) クライアント＆1ステップ導入生成
 │   ├── pdf-parser.js             # 純粋 JS ローカル PDF 解析・テキスト抽出
 │   ├── office-parser.js          # 純粋 JS Office (.docx/.pptx/.xlsx) 画像抽出＆Wordテンプレ生成
 │   ├── playbook.js               # 手順書パーサー＆AI可読テンプレート定義

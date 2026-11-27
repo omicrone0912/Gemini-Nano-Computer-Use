@@ -6,7 +6,9 @@ test('manifest.json enforces strict local-only CSP and required PDF permissions'
   const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
   const csp = manifest?.content_security_policy?.extension_pages;
   assert.equal(typeof csp, 'string');
-  assert.match(csp, /connect-src 'none'/);
+  assert.match(csp, /connect-src http:\/\/127\.0\.0\.1:11434 http:\/\/localhost:11434/);
+  const connectDirective = csp.split(';').find((d) => d.trim().startsWith('connect-src')) || '';
+  assert.doesNotMatch(connectDirective, /https:|wss?:|\*/i);
   assert.match(csp, /img-src 'self' data: blob:/);
   assert.match(csp, /media-src 'self' blob: data:/);
   assert.match(csp, /frame-src 'self' blob:/);

@@ -35,6 +35,40 @@
           <progress id="downloadProgressBar" class="progress-bar" max="100" value="0"></progress>
           <span id="downloadProgressLabel" class="progress-label">0%</span>
         </div>
+
+        <div class="qwen-toggle-row">
+          <label class="toggle-switch-label" for="useQwenFallbackCheckbox">
+            <span class="toggle-switch">
+              <input type="checkbox" id="useQwenFallbackCheckbox" />
+              <span class="toggle-slider"></span>
+            </span>
+            <span class="qwen-toggle-text">Gemini Nano が使えないとき Qwen 2.5 VL を使用</span>
+          </label>
+        </div>
+
+        <div id="qwenPanel" class="qwen-panel hidden">
+          <div class="qwen-model-row">
+            <label for="qwenModelSelect" class="qwen-model-label">モデル:</label>
+            <select id="qwenModelSelect" aria-label="Qwen 2.5 VL モデル選択">
+              <option value="qwen2.5vl:3b">Qwen 2.5 VL 3B（軽量・推奨）</option>
+              <option value="qwen2.5vl:7b">Qwen 2.5 VL 7B（高精度）</option>
+            </select>
+          </div>
+          <div class="qwen-status-row">
+            <span class="status-dot" id="qwenStatusDot"></span>
+            <span id="qwenStatusText" class="qwen-status-text">Qwen 2.5 VL の状態を確認中...</span>
+          </div>
+          <div class="qwen-actions">
+            <button id="installQwenBtn" class="btn btn-primary btn-xs" type="button">1ステップでインストール</button>
+            <button id="copyQwenCmdBtn" class="btn btn-secondary btn-xs" type="button">コマンドコピー</button>
+            <button id="recheckQwenBtn" class="btn btn-ghost btn-xs" type="button">再確認</button>
+          </div>
+          <div id="qwenProgressWrap" class="progress-wrap hidden">
+            <progress id="qwenProgressBar" class="progress-bar" max="100" value="0"></progress>
+            <span id="qwenProgressLabel" class="progress-label">0%</span>
+          </div>
+          <div id="qwenInstallHint" class="qwen-hint hidden"></div>
+        </div>
       </div>
 
       <section id="setupGuide" class="setup-guide hidden">

@@ -12,6 +12,11 @@ import {
   sanitizePdfFilename
 } from '../shared/pdf-parser.js';
 import { SYSTEM_PROMPT } from '../shared/prompt-builder.js';
+import {
+  clearRunProgressState,
+  loadRunProgressState,
+  saveRunProgressState
+} from '../shared/session-state.js';
 import { TabWorkspaceManager } from '../shared/tab-workspace.js';
 import { saveViewerMedia } from '../shared/viewer-storage.js';
 import { compileWorkflowToPlaybook, validateWorkflowPreset } from '../shared/workflow-flow.js';
@@ -539,15 +544,78 @@ function setActionBadge(text, color = '#2563eb') {
   }
 }
 
+let keepAliveTimer = null;
+
+function startKeepAlive() {
+  if (keepAliveTimer) return;
+  keepAliveTimer = setInterval(() => {
+    try {
+      chrome.runtime?.getPlatformInfo?.(() => {});
+    } catch {
+      // Ignore keepalive failure
+    }
+  }, 20000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+}
+
+function persistBgStateSnapshot(wsOverride = null) {
+  const runPersist = async () => {
+    const ws = wsOverride ?? (await workspace.getWorkspaceContext().catch(() => null));
+    await saveRunProgressState(chrome.storage?.local, {
+      running: bgState.running,
+      mode: 'background',
+      goal: bgState.goal,
+      settings: bgState.settings,
+      events: bgState.events,
+      pendingConfirmation: bgState.pendingConfirmation,
+      lastOutcome: bgState.lastOutcome,
+      loadedPlaybook: bgState.loadedPlaybook,
+      workspace: ws
+    });
+  };
+  runPersist().catch(() => {});
+}
+
+async function hydrateBgStateIfNeeded() {
+  if (bgState.running || bgState.events.length > 0 || bgState.lastOutcome || bgState.loadedPlaybook) {
+    return null;
+  }
+  const saved = await loadRunProgressState(chrome.storage?.local);
+  if (!saved || saved.mode === 'foreground') {
+    return null;
+  }
+  bgState.goal = saved.goal || '';
+  bgState.settings = saved.settings ? { ...DEFAULT_SETTINGS, ...saved.settings } : { ...DEFAULT_SETTINGS };
+  bgState.events = Array.isArray(saved.events) ? saved.events : [];
+  bgState.loadedPlaybook = saved.loadedPlaybook || null;
+  bgState.running = false;
+  bgState.pendingConfirmation = null;
+  bgState.lastOutcome =
+    saved.lastOutcome ||
+    (saved.running
+      ? {
+          status: 'stopped',
+          message: 'Chrome がバックグラウンド処理を休止したため実行が中断されました（途中までの履歴を復元しました）。'
+        }
+      : null);
+  return saved;
+}
+
 function recordAndBroadcastEvent(event, extra = {}) {
   // Keep recent events bounded and drop large preview URLs from older entries
   const compactEvent = { ...event };
   bgState.events.push(compactEvent);
-  if (bgState.events.length > 100) {
+  if (bgState.events.length > 80) {
     bgState.events.shift();
   }
-  if (bgState.events.length > 12) {
-    for (let i = 0; i < bgState.events.length - 12; i += 1) {
+  if (bgState.events.length > 10) {
+    for (let i = 0; i < bgState.events.length - 10; i += 1) {
       if (bgState.events[i].previewDataUrl) {
         delete bgState.events[i].previewDataUrl;
       }
@@ -559,11 +627,14 @@ function recordAndBroadcastEvent(event, extra = {}) {
   } else if (event.type === 'run_finished') {
     bgState.lastOutcome = { status: event.status, message: event.message };
     bgState.running = false;
+    stopKeepAlive();
     setActionBadge(event.status === 'completed' ? 'OK' : '', '#16a34a');
     if (event.status !== 'completed') {
       setActionBadge('', '#2563eb');
     }
   }
+
+  persistBgStateSnapshot(extra.workspace || null);
 
   chrome.runtime
     .sendMessage({
@@ -903,12 +974,14 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
   });
 
   bgState.running = true;
+  startKeepAlive();
   bgState.goal = goal;
   bgState.settings = merged;
   bgState.events = [];
   bgState.pendingConfirmation = null;
   bgState.lastOutcome = null;
   bgState.loadedPlaybook = initialPlaybook || null;
+  persistBgStateSnapshot(wsContext);
 
   if (initialPdf?.pdfBase64) {
     try {
@@ -944,6 +1017,7 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
         pendingConfirmResolver = (res) => {
           bgState.pendingConfirmation = null;
           pendingConfirmResolver = null;
+          persistBgStateSnapshot();
           resolve(res);
         };
       });
@@ -958,10 +1032,12 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
   bgController
     .run({ goal, settings: merged })
     .finally(async () => {
+      stopKeepAlive();
       bgState.running = false;
       bgState.pendingConfirmation = null;
       pendingConfirmResolver = null;
       bgController = null;
+      persistBgStateSnapshot();
     });
 
   return { ok: true, workspace: wsContext };
@@ -1119,7 +1195,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             pendingConfirmResolver({ approved: false, stop: true });
           }
           bgController?.stop();
+          bgState.pendingConfirmation = null;
+          stopKeepAlive();
           setActionBadge('', '#2563eb');
+          persistBgStateSnapshot();
           sendResponse({ ok: true });
           break;
         }
@@ -1133,11 +1212,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         case MSG_TYPES.GET_BACKGROUND_RUN_STATE: {
-          const ws = await workspace.getWorkspaceContext().catch(() => null);
+          const hydrated = await hydrateBgStateIfNeeded();
+          const ws = (await workspace.getWorkspaceContext().catch(() => null)) || hydrated?.workspace || null;
           sendResponse({
             ok: true,
             state: {
               running: bgState.running,
+              mode: 'background',
               goal: bgState.goal,
               settings: bgState.settings,
               events: bgState.events,
@@ -1155,6 +1236,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             },
             workspace: ws
           });
+          break;
+        }
+        case MSG_TYPES.CLEAR_BACKGROUND_RUN_HISTORY: {
+          if (!bgState.running) {
+            bgState.events = [];
+            bgState.lastOutcome = null;
+            bgState.pendingConfirmation = null;
+            setActionBadge('', '#2563eb');
+          }
+          await clearRunProgressState(chrome.storage?.local);
+          sendResponse({ ok: true });
           break;
         }
         case MSG_TYPES.RUN_WORKFLOW_PRESET: {

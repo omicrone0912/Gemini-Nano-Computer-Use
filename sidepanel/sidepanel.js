@@ -24,6 +24,14 @@ import {
   parsePlaybookContent
 } from '../shared/playbook.js';
 import {
+  buildReplayPlan,
+  clearRunProgressState,
+  loadPanelSessionState,
+  loadRunProgressState,
+  savePanelSessionState,
+  saveRunProgressState
+} from '../shared/session-state.js';
+import {
   WorkflowPresetStore,
   buildPreviewStepsFromGraph,
   compileWorkflowToPlaybook
@@ -118,6 +126,35 @@ let activeBgConfirmCleanup = null;
 let availabilityState = null;
 let loadedPdf = null;
 let loadedPlaybook = null;
+let activeMainTab = 'agent';
+let fgRunEvents = [];
+let bootRestoring = true;
+const bufferedLiveEvents = [];
+let panelSaveTimer = null;
+
+async function persistPanelState() {
+  try {
+    await savePanelSessionState(chrome.storage?.local, {
+      goal: els.goalInput?.value || '',
+      selectedPresetId: els.quickPresetSelect?.value || '',
+      activeMainTab,
+      playbookSectionOpen: Boolean(els.playbookSection?.open),
+      loadedPlaybook
+    });
+  } catch {
+    // Ignore session save error
+  }
+}
+
+function schedulePersistPanelState() {
+  if (panelSaveTimer) {
+    clearTimeout(panelSaveTimer);
+  }
+  panelSaveTimer = setTimeout(() => {
+    panelSaveTimer = null;
+    persistPanelState();
+  }, 250);
+}
 
 function renderSetupFlags() {
   els.flagsList.innerHTML = '';
@@ -645,7 +682,25 @@ function getOrCreateStepCard(step) {
   return card;
 }
 
-function handleAgentEvent(event) {
+function handleAgentEvent(event, { replaying = false } = {}) {
+  if (!replaying && activeController && !backgroundRunActive) {
+    fgRunEvents.push({ ...event });
+    if (fgRunEvents.length > 80) {
+      fgRunEvents.shift();
+    }
+    saveRunProgressState(chrome.storage?.local, {
+      running: event.type !== 'run_finished',
+      mode: 'foreground',
+      goal: els.goalInput.value,
+      settings: collectSettings(),
+      events: fgRunEvents,
+      pendingConfirmation: null,
+      lastOutcome: event.type === 'run_finished' ? { status: event.status, message: event.message } : null,
+      loadedPlaybook,
+      workspace: null
+    }).catch(() => {});
+  }
+
   switch (event.type) {
     case 'run_started': {
       els.resultBanner.classList.add('hidden');
@@ -822,8 +877,10 @@ async function startRun() {
   }
 
   await saveSettings();
+  await persistPanelState();
   const settings = collectSettings();
   const tab = await getActiveTab();
+  clearTimelineUiOnly();
 
   if (settings.allowBackgroundExecution) {
     setRunningUi(true);
@@ -864,6 +921,7 @@ async function startRun() {
 
   // Foreground execution (or automatic fallback when Offscreen LanguageModel is unavailable)
   setRunningUi(true);
+  fgRunEvents = [];
   if (settings.allowMultiTab) {
     try {
       const wsRes = await chrome.runtime.sendMessage({
@@ -906,12 +964,21 @@ async function startRun() {
   }
 }
 
-function clearTimeline() {
+function clearTimelineUiOnly() {
   stepCards.clear();
   els.resultBanner.classList.add('hidden');
   els.stepCounter.textContent = '待機中';
   els.timelineList.innerHTML =
     '<div class="empty-state">タスクを入力して「実行開始」を押すと、Gemini Nano が現在のタブ画面を観察しながら操作を実行します。</div>';
+}
+
+function clearTimeline() {
+  clearTimelineUiOnly();
+  if (!backgroundRunActive && !activeController) {
+    fgRunEvents = [];
+    chrome.runtime.sendMessage({ type: MSG_TYPES.CLEAR_BACKGROUND_RUN_HISTORY }).catch(() => {});
+    clearRunProgressState(chrome.storage?.local).catch(() => {});
+  }
 }
 
 // Event listeners
@@ -955,8 +1022,40 @@ els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
 els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
 els.useBuiltInViewerCheckbox.addEventListener('change', saveSettings);
 
+els.goalInput.addEventListener('input', schedulePersistPanelState);
+els.goalInput.addEventListener('change', persistPanelState);
+els.playbookSection.addEventListener('toggle', persistPanelState);
+
+window.addEventListener('pagehide', () => {
+  if (panelSaveTimer) {
+    clearTimeout(panelSaveTimer);
+    panelSaveTimer = null;
+  }
+  persistPanelState();
+  if (activeController && !backgroundRunActive && fgRunEvents.length > 0) {
+    saveRunProgressState(chrome.storage?.local, {
+      running: false,
+      mode: 'foreground',
+      goal: els.goalInput.value,
+      settings: collectSettings(),
+      events: fgRunEvents,
+      pendingConfirmation: null,
+      lastOutcome: {
+        status: 'stopped',
+        message: 'サイドパネルを閉じたためフォアグラウンド実行を中断しました（途中までの履歴を保持しています）。'
+      },
+      loadedPlaybook,
+      workspace: null
+    }).catch(() => {});
+  }
+});
+
 chrome.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== MSG_TYPES.AGENT_EVENT) {
+    return false;
+  }
+  if (bootRestoring) {
+    bufferedLiveEvents.push(message);
     return false;
   }
   if (message.workspace) {
@@ -968,48 +1067,93 @@ chrome.runtime.onMessage.addListener((message) => {
   return false;
 });
 
-async function restoreBackgroundRunState() {
+async function restorePanelAndRunState() {
+  let lastReplayedTs = 0;
   try {
-    const res = await chrome.runtime.sendMessage({ type: MSG_TYPES.GET_BACKGROUND_RUN_STATE });
-    if (!res?.ok || !res.state) return;
-    const { state, workspace } = res;
-
-    if (workspace) {
-      renderWorkspaceBar(workspace);
-    }
-
-    if (state.loadedPdfMeta?.pdfBase64) {
-      const bytes = base64ToUint8Array(state.loadedPdfMeta.pdfBase64);
-      await loadPdfFromBytes(
-        bytes,
-        state.loadedPdfMeta.filename,
-        state.loadedPdfMeta.downloadId ?? null
-      );
-      if (loadedPdf && state.loadedPdfMeta.currentPage) {
-        loadedPdf.currentPage = state.loadedPdfMeta.currentPage;
+    const panelSaved = await loadPanelSessionState(chrome.storage?.local);
+    if (panelSaved) {
+      if (panelSaved.loadedPlaybook) {
+        loadedPlaybook = panelSaved.loadedPlaybook;
+        renderLoadedPlaybookUi();
+      }
+      if (typeof panelSaved.playbookSectionOpen === 'boolean') {
+        els.playbookSection.open = panelSaved.playbookSectionOpen;
+      }
+      if (typeof panelSaved.goal === 'string' && panelSaved.goal) {
+        els.goalInput.value = panelSaved.goal;
+      }
+      if (
+        panelSaved.selectedPresetId &&
+        Array.from(els.quickPresetSelect.options).some((o) => o.value === panelSaved.selectedPresetId)
+      ) {
+        els.quickPresetSelect.value = panelSaved.selectedPresetId;
+      }
+      if (panelSaved.activeMainTab === 'flow') {
+        switchMainTab('flow', { skipPersist: true });
       }
     }
 
-    if (state.loadedPlaybook) {
-      loadedPlaybook = state.loadedPlaybook;
+    const [bgRes, persistedRun] = await Promise.all([
+      chrome.runtime.sendMessage({ type: MSG_TYPES.GET_BACKGROUND_RUN_STATE }).catch(() => null),
+      loadRunProgressState(chrome.storage?.local)
+    ]);
+
+    const swState = bgRes?.ok && bgRes.state ? { ...bgRes.state, workspace: bgRes.workspace || null } : null;
+    const swHasData = Boolean(
+      swState && (swState.running || (Array.isArray(swState.events) && swState.events.length > 0) || swState.lastOutcome)
+    );
+    const chosenRunState = swHasData ? swState : persistedRun;
+    const plan = buildReplayPlan(chosenRunState);
+
+    if (plan.loadedPlaybook && (plan.running || !loadedPlaybook)) {
+      loadedPlaybook = plan.loadedPlaybook;
       renderLoadedPlaybookUi();
     }
 
-    if (state.running || (Array.isArray(state.events) && state.events.length > 0)) {
-      if (state.goal && !els.goalInput.value.trim()) {
-        els.goalInput.value = state.goal;
+    if (plan.workspace) {
+      renderWorkspaceBar(plan.workspace);
+    }
+
+    if (plan.shouldRestore) {
+      clearTimelineUiOnly();
+      if (plan.goal && (!els.goalInput.value.trim() || plan.running)) {
+        els.goalInput.value = plan.goal;
       }
-      backgroundRunActive = Boolean(state.running);
+      backgroundRunActive = Boolean(plan.running && plan.mode !== 'foreground');
       setRunningUi(backgroundRunActive);
-      for (const ev of state.events) {
-        handleAgentEvent(ev);
+
+      for (const ev of plan.eventsToReplay) {
+        handleAgentEvent(ev, { replaying: true });
+        if (typeof ev.timestamp === 'number' && ev.timestamp > lastReplayedTs) {
+          lastReplayedTs = ev.timestamp;
+        }
       }
-      if (state.pendingConfirmation) {
-        showBackgroundConfirmationCard(state.pendingConfirmation);
+
+      if (plan.pendingConfirmation) {
+        showBackgroundConfirmationCard(plan.pendingConfirmation);
+      } else if (!plan.running && plan.lastOutcome && els.resultBanner.classList.contains('hidden')) {
+        els.resultBanner.className = `result-banner ${plan.lastOutcome.status || 'stopped'}`;
+        els.resultBanner.textContent = plan.lastOutcome.message || '終了しました。';
+        els.resultBanner.classList.remove('hidden');
+        els.stepCounter.textContent = plan.lastOutcome.status === 'completed' ? '完了' : '終了';
       }
     }
   } catch {
     // Ignore restore failure on cold start
+  } finally {
+    bootRestoring = false;
+    while (bufferedLiveEvents.length > 0) {
+      const msg = bufferedLiveEvents.shift();
+      if (msg.workspace) {
+        renderWorkspaceBar(msg.workspace);
+      }
+      if (msg.event && (backgroundRunActive || msg.event.type !== 'workspace_updated')) {
+        const ts = typeof msg.event.timestamp === 'number' ? msg.event.timestamp : 0;
+        if (ts === 0 || ts > lastReplayedTs) {
+          handleAgentEvent(msg.event);
+        }
+      }
+    }
   }
 }
 
@@ -1130,6 +1274,7 @@ async function handlePlaybookFile(file) {
   loadedPlaybook = parsePlaybookContent(rawText, file.name, { images });
   els.playbookSection.open = true;
   renderLoadedPlaybookUi();
+  await persistPanelState();
   showPlaybookStatus(
     `手順書「${loadedPlaybook.title}」を読み込みました（添付画像 ${loadedPlaybook.images.length}枚・厳格手順書モード有効）。`,
     'completed'
@@ -1203,6 +1348,7 @@ els.copySkillPromptBtn.addEventListener('click', async () => {
 els.clearPlaybookBtn.addEventListener('click', () => {
   loadedPlaybook = null;
   renderLoadedPlaybookUi();
+  persistPanelState();
   showPlaybookStatus('手順書の適用を解除しました。', 'stopped');
 });
 
@@ -1211,6 +1357,7 @@ els.applyPlaybookGoalBtn.addEventListener('click', () => {
   els.goalInput.value = loadedPlaybook.goal
     ? `${loadedPlaybook.goal}\n（手順書「${loadedPlaybook.title}」に従って実行してください）`
     : `手順書「${loadedPlaybook.title}」のステップに従って実行してください。`;
+  persistPanelState();
   els.goalInput.focus();
   els.goalInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
@@ -1235,14 +1382,18 @@ els.playbookDropZone.addEventListener('drop', async (e) => {
 });
 
 // Flowchart & Local Preset Logic
-function switchMainTab(tabName) {
+function switchMainTab(tabName, { skipPersist = false } = {}) {
   const isFlow = tabName === 'flow';
+  activeMainTab = isFlow ? 'flow' : 'agent';
   els.tabAgentBtn.classList.toggle('active', !isFlow);
   els.tabFlowBtn.classList.toggle('active', isFlow);
   els.agentPanel.classList.toggle('hidden', isFlow);
   els.flowPanel.classList.toggle('hidden', !isFlow);
   if (isFlow) {
     loadFlowPresets();
+  }
+  if (!skipPersist) {
+    persistPanelState();
   }
 }
 
@@ -1261,6 +1412,7 @@ function applyPresetToPlaybook(preset, switchTab = true) {
     compiled.goal ||
     `フローチャートプリセット「${preset.name}」の条件分岐とステップに従って実行してください。`;
   els.quickPresetSelect.value = preset.id;
+  persistPanelState();
   showPlaybookStatus(`プリセット「${preset.name}」を厳格手順書として適用しました。`, 'completed');
   if (switchTab) {
     switchMainTab('agent');
@@ -1443,6 +1595,7 @@ els.quickApplyPresetBtn.addEventListener('click', () => {
   if (!id) {
     loadedPlaybook = null;
     renderLoadedPlaybookUi();
+    persistPanelState();
     return;
   }
   const preset = flowPresets.find((p) => p.id === id);
@@ -1463,5 +1616,5 @@ renderLoadedPlaybookUi();
 await loadSettings();
 await syncViewerInterceptConfig();
 await loadFlowPresets();
+await restorePanelAndRunState();
 await refreshAvailability();
-await restoreBackgroundRunState();

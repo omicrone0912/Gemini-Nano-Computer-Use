@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableExtensions
 set "MODEL=%~1"
 if "%MODEL%"=="" set "MODEL=qwen2.5vl:3b"

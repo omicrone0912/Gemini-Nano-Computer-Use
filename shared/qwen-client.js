@@ -1,9 +1,12 @@
 import { ACTION_RESPONSE_SCHEMA, parseActionResponse } from './action-schema.js';
+import { buildZipBytes } from './office-parser.js';
 import { uint8ArrayToBase64 } from './pdf-parser.js';
 import { SYSTEM_PROMPT } from './prompt-builder.js';
 
 export const QWEN_DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
 export const QWEN_DEFAULT_MODEL = 'qwen2.5vl:3b';
+export const QWEN_INSTALLER_BAT_FILENAME = 'install-qwen25vl.bat';
+export const QWEN_INSTALLER_ZIP_FILENAME = 'install-qwen25vl.zip';
 
 export const QWEN_MODEL_OPTIONS = Object.freeze([
   { value: 'qwen2.5vl:3b', label: 'Qwen 2.5 VL 3B（軽量・推奨 約3.2GB）' },
@@ -32,6 +35,7 @@ export function generateQwenWindowsInstallerBat(model = QWEN_DEFAULT_MODEL) {
   const safeModel = QWEN_MODEL_OPTIONS.some((m) => m.value === model) ? model : QWEN_DEFAULT_MODEL;
   const lines = [
     '@echo off',
+    'chcp 65001 >nul',
     'setlocal EnableExtensions',
     'title Gemini Nano Computer Use - Qwen 2.5 VL 1-Step Installer',
     'echo ============================================================',
@@ -110,6 +114,203 @@ export function generateQwenPowerShellOneLiner(model = QWEN_DEFAULT_MODEL) {
     'Start-Sleep -Seconds 3;',
     `& $exe pull ${safeModel}`
   ].join(' ');
+}
+
+export function buildQwenInstallerBatPayload(model = QWEN_DEFAULT_MODEL) {
+  const batSource = generateQwenWindowsInstallerBat(model);
+  const bytes = new TextEncoder().encode(batSource);
+  const dataUrl = `data:application/octet-stream;base64,${uint8ArrayToBase64(bytes)}`;
+  return {
+    filename: QWEN_INSTALLER_BAT_FILENAME,
+    batSource,
+    bytes,
+    dataUrl
+  };
+}
+
+export function buildQwenInstallerZipPayload(model = QWEN_DEFAULT_MODEL) {
+  const safeModel = QWEN_MODEL_OPTIONS.some((m) => m.value === model) ? model : QWEN_DEFAULT_MODEL;
+  const batSource = generateQwenWindowsInstallerBat(safeModel);
+  const readme = [
+    'Gemini Nano Computer Use - Qwen 2.5 VL 1-Step Setup',
+    '',
+    '手順:',
+    '1. この ZIP ファイルをすべて展開（解凍）してください。',
+    `2. 展開したフォルダ内の「${QWEN_INSTALLER_BAT_FILENAME}」をダブルクリックして実行してください。`,
+    `3. Ollama と「${safeModel}」の導入が完了すると、Chrome 拡張機能のサイドパネルが自動的に利用可能になります。`
+  ].join('\r\n') + '\r\n';
+
+  const bytes = buildZipBytes([
+    { name: QWEN_INSTALLER_BAT_FILENAME, data: batSource },
+    { name: 'README.txt', data: readme }
+  ]);
+  const dataUrl = `data:application/zip;base64,${uint8ArrayToBase64(bytes)}`;
+  return {
+    filename: QWEN_INSTALLER_ZIP_FILENAME,
+    bytes,
+    dataUrl
+  };
+}
+
+export function isPendingDownloadDanger(danger) {
+  return Boolean(danger && danger !== 'safe' && danger !== 'accepted' && danger !== 'deepScannedSafe');
+}
+
+export async function startMonitoredChromeDownload({
+  downloadsApi,
+  url,
+  filename,
+  saveAs = true,
+  conflictAction = 'uniquify',
+  timeoutMs = 180000,
+  onStarted,
+  onDanger,
+  onComplete,
+  onInterrupted
+} = {}) {
+  if (typeof downloadsApi?.download !== 'function') {
+    throw new Error('chrome.downloads.download API が利用できません。');
+  }
+
+  let downloadId = null;
+  let settled = false;
+  let dangerHandled = false;
+  let latestFilename = filename || '';
+  let timeoutId = null;
+  const bufferedDeltas = [];
+
+  const cleanup = () => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (typeof downloadsApi.onChanged?.removeListener === 'function') {
+      downloadsApi.onChanged.removeListener(onChangedListener);
+    }
+  };
+
+  const handleState = async ({ state, danger, error, filename: nextFilename }) => {
+    if (nextFilename) {
+      latestFilename = nextFilename;
+    }
+    if (settled) return;
+
+    if (state === 'complete') {
+      settled = true;
+      cleanup();
+      onComplete?.({ downloadId, filename: latestFilename });
+      return;
+    }
+
+    if (state === 'interrupted') {
+      settled = true;
+      cleanup();
+      const errCode = error || 'INTERRUPTED';
+      onInterrupted?.({
+        downloadId,
+        error: errCode,
+        canceled: errCode === 'USER_CANCELED'
+      });
+      return;
+    }
+
+    if (!dangerHandled && isPendingDownloadDanger(danger)) {
+      dangerHandled = true;
+      let acceptPromptShown = false;
+      let acceptError = '';
+      if (typeof downloadsApi.acceptDanger === 'function') {
+        try {
+          await downloadsApi.acceptDanger(downloadId);
+          acceptPromptShown = true;
+        } catch (err) {
+          acceptError = err?.message || String(err);
+        }
+      }
+      if (!settled) {
+        onDanger?.({
+          downloadId,
+          danger,
+          acceptPromptShown,
+          acceptError
+        });
+      }
+    }
+  };
+
+  const onChangedListener = (delta) => {
+    if (!delta) return;
+    if (downloadId === null) {
+      bufferedDeltas.push(delta);
+      return;
+    }
+    if (delta.id !== downloadId) return;
+    handleState({
+      state: delta.state?.current,
+      danger: delta.danger?.current,
+      error: delta.error?.current,
+      filename: delta.filename?.current
+    });
+  };
+
+  if (typeof downloadsApi.onChanged?.addListener === 'function') {
+    downloadsApi.onChanged.addListener(onChangedListener);
+  }
+
+  try {
+    downloadId = await downloadsApi.download({
+      url,
+      filename,
+      conflictAction,
+      saveAs
+    });
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+
+  if (typeof downloadId !== 'number') {
+    cleanup();
+    throw new Error('ダウンロードを開始できませんでした。');
+  }
+
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(cleanup, timeoutMs);
+  }
+
+  onStarted?.({ downloadId, filename: latestFilename });
+
+  for (const delta of bufferedDeltas) {
+    if (delta.id === downloadId) {
+      await handleState({
+        state: delta.state?.current,
+        danger: delta.danger?.current,
+        error: delta.error?.current,
+        filename: delta.filename?.current
+      });
+    }
+  }
+
+  if (!settled && typeof downloadsApi.search === 'function') {
+    downloadsApi
+      .search({ id: downloadId })
+      .then((items) => {
+        const item = Array.isArray(items) ? items[0] : null;
+        if (item && !settled) {
+          handleState({
+            state: item.state,
+            danger: item.danger,
+            error: item.error,
+            filename: item.filename
+          });
+        }
+      })
+      .catch(() => {});
+  }
+
+  return {
+    downloadId,
+    cancelMonitor: cleanup
+  };
 }
 
 function stripDataUrlPrefix(dataUrl = '') {

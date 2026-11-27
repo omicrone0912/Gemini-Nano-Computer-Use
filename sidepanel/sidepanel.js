@@ -10,8 +10,10 @@ import {
   QWEN_DEFAULT_ENDPOINT,
   QWEN_DEFAULT_MODEL,
   QwenLocalClient,
+  buildQwenInstallerBatPayload,
+  buildQwenInstallerZipPayload,
   generateQwenPowerShellOneLiner,
-  generateQwenWindowsInstallerBat
+  startMonitoredChromeDownload
 } from '../shared/qwen-client.js';
 import { isSupportedViewerUrl } from '../shared/media-viewer.js';
 import {
@@ -68,6 +70,10 @@ const els = {
   qwenProgressBar: document.getElementById('qwenProgressBar'),
   qwenProgressLabel: document.getElementById('qwenProgressLabel'),
   qwenInstallHint: document.getElementById('qwenInstallHint'),
+  qwenHintActions: document.getElementById('qwenHintActions'),
+  showQwenDownloadBtn: document.getElementById('showQwenDownloadBtn'),
+  openDownloadsPageBtn: document.getElementById('openDownloadsPageBtn'),
+  downloadQwenZipBtn: document.getElementById('downloadQwenZipBtn'),
   setupGuide: document.getElementById('setupGuide'),
   flagsList: document.getElementById('flagsList'),
   goalInput: document.getElementById('goalInput'),
@@ -150,6 +156,8 @@ let availabilityState = null;
 let qwenAvailability = null;
 let qwenPollTimer = null;
 let qwenPollStartedAt = 0;
+let activeQwenDownloadCleanup = null;
+let lastCompletedQwenDownloadId = null;
 let loadedPdf = null;
 let loadedPlaybook = null;
 let activeMainTab = 'agent';
@@ -286,6 +294,118 @@ function setDownloadProgress(percent, visible = true) {
   els.downloadProgressLabel.textContent = `${clamped}%`;
 }
 
+function setQwenHint(
+  message,
+  { tone = 'neutral', showFolder = false, showDownloadsPage = false, showZipFallback = false } = {}
+) {
+  els.qwenInstallHint.textContent = message;
+  const toneClass = tone === 'ok' ? ' ok' : tone === 'warning' ? ' warning' : '';
+  els.qwenInstallHint.className = `qwen-hint${toneClass}`;
+  els.showQwenDownloadBtn.classList.toggle('hidden', !showFolder);
+  els.openDownloadsPageBtn.classList.toggle('hidden', !showDownloadsPage);
+  els.downloadQwenZipBtn.classList.toggle('hidden', !showZipFallback);
+  els.qwenHintActions.classList.toggle('hidden', !(showFolder || showDownloadsPage || showZipFallback));
+}
+
+function clearQwenHint() {
+  els.qwenInstallHint.className = 'qwen-hint hidden';
+  els.qwenHintActions.classList.add('hidden');
+  els.showQwenDownloadBtn.classList.add('hidden');
+  els.openDownloadsPageBtn.classList.add('hidden');
+  els.downloadQwenZipBtn.classList.add('hidden');
+}
+
+function triggerAnchorFileDownload(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.className = 'hidden';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    a.remove();
+  }, 1000);
+}
+
+async function downloadQwenInstaller({ asZip = false } = {}) {
+  activeQwenDownloadCleanup?.();
+  activeQwenDownloadCleanup = null;
+
+  const model = els.qwenModelSelect.value || QWEN_DEFAULT_MODEL;
+  const payload = asZip ? buildQwenInstallerZipPayload(model) : buildQwenInstallerBatPayload(model);
+
+  if (chrome.downloads?.download) {
+    try {
+      const monitor = await startMonitoredChromeDownload({
+        downloadsApi: chrome.downloads,
+        url: payload.dataUrl,
+        filename: payload.filename,
+        saveAs: true,
+        conflictAction: 'uniquify',
+        onStarted: () => {
+          setQwenHint(
+            `「${payload.filename}」の保存ダイアログを開きました。保存先を選んで「保存」を押してください。`,
+            { showZipFallback: !asZip }
+          );
+        },
+        onDanger: () => {
+          setQwenHint(
+            `Chrome の安全確認が保留中です。表示された確認ダイアログ、または下の「DL画面を開く」から「保持」を押すと「${payload.filename}」が保存されます。ブロックされる場合は「ZIP版 (.zip) をDL」をお使いください。`,
+            { tone: 'warning', showDownloadsPage: true, showZipFallback: !asZip }
+          );
+        },
+        onComplete: ({ downloadId }) => {
+          lastCompletedQwenDownloadId = downloadId;
+          const runGuidance = asZip
+            ? `「${payload.filename}」を保存しました。ZIP を展開して中の「install-qwen25vl.bat」をダブルクリックすると Ollama と ${model} の設定・取得が自動で完了します（完了すると自動で切り替わります）。`
+            : `「${payload.filename}」を保存しました。ダブルクリックで実行すると Ollama と ${model} の設定・取得が自動で完了します（完了すると自動で切り替わります）。`;
+          setQwenHint(runGuidance, { tone: 'ok', showFolder: true });
+          startQwenPoll();
+        },
+        onInterrupted: ({ error, canceled }) => {
+          if (canceled) {
+            setQwenHint(
+              '保存がキャンセルされました。もう一度押すか、「ZIP版 (.zip) をDL」または「コマンドコピー」をご利用ください。',
+              { showZipFallback: !asZip }
+            );
+            return;
+          }
+          if (!asZip && (error === 'NETWORK_FAILED' || error === 'SERVER_FAILED')) {
+            triggerAnchorFileDownload(payload.dataUrl, payload.filename);
+            setQwenHint(
+              '標準ダウンロードでエラーが発生したため別方式でダウンロードを試行しました。保存されない場合は「DL画面を開く」または「ZIP版 (.zip) をDL」をお試しください。',
+              { tone: 'warning', showDownloadsPage: true, showZipFallback: true }
+            );
+            startQwenPoll();
+            return;
+          }
+          setQwenHint(
+            `Chrome の保護機能により「${payload.filename}」の直接保存が中断されました（${error}）。下の「ZIP版 (.zip) をDL」から展開して実行するか、「コマンドコピー」を PowerShell に貼り付けてください。`,
+            { tone: 'warning', showDownloadsPage: true, showZipFallback: !asZip }
+          );
+        }
+      });
+      activeQwenDownloadCleanup = monitor.cancelMonitor;
+      return;
+    } catch {
+      triggerAnchorFileDownload(payload.dataUrl, payload.filename);
+      setQwenHint(
+        `ブラウザ標準方式で「${payload.filename}」のダウンロードを開始しました。保存されない場合は「DL画面を開く」または「ZIP版 (.zip) をDL」をお試しください。`,
+        { tone: 'warning', showDownloadsPage: true, showZipFallback: !asZip }
+      );
+      startQwenPoll();
+      return;
+    }
+  }
+
+  triggerAnchorFileDownload(payload.dataUrl, payload.filename);
+  setQwenHint(
+    `「${payload.filename}」のダウンロードを開始しました。実行すると Ollama と ${model} の導入が完了します。`,
+    { tone: 'ok' }
+  );
+  startQwenPoll();
+}
+
 function setQwenDownloadProgress(percent, visible = true) {
   els.qwenProgressWrap.classList.toggle('hidden', !visible);
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
@@ -340,13 +460,13 @@ async function refreshQwenAvailability() {
     els.qwenStatusDot.className = 'status-dot ok';
     els.installQwenBtn.textContent = `導入済み (${model})`;
     els.installQwenBtn.disabled = true;
-    els.qwenInstallHint.classList.add('hidden');
+    clearQwenHint();
     stopQwenPoll();
   } else if (status === 'downloadable') {
     els.qwenStatusDot.className = 'status-dot';
     els.installQwenBtn.textContent = `1ステップで取得 (${model})`;
     els.installQwenBtn.disabled = false;
-    els.qwenInstallHint.classList.add('hidden');
+    clearQwenHint();
   } else {
     els.qwenStatusDot.className = 'status-dot error';
     els.installQwenBtn.textContent = '1ステップ導入 (.bat) をDL';
@@ -1167,13 +1287,13 @@ els.copyQwenCmdBtn.addEventListener('click', async () => {
   const cmd = generateQwenPowerShellOneLiner(model);
   try {
     await navigator.clipboard.writeText(cmd);
-    els.qwenInstallHint.textContent =
-      'PowerShell 用の1行導入コマンドをコピーしました。PowerShell に貼り付けて Enter を押すだけで Ollama と Qwen 2.5 VL の導入が完了します。';
-    els.qwenInstallHint.classList.remove('hidden');
+    setQwenHint(
+      'PowerShell 用の1行導入コマンドをコピーしました。PowerShell に貼り付けて Enter を押すだけで Ollama と Qwen 2.5 VL の導入が完了します。',
+      { tone: 'ok' }
+    );
     startQwenPoll();
   } catch {
-    els.qwenInstallHint.textContent = 'クリップボードへのコピーに失敗しました。';
-    els.qwenInstallHint.classList.remove('hidden');
+    setQwenHint('クリップボードへのコピーに失敗しました。', { tone: 'warning' });
   }
 });
 
@@ -1182,8 +1302,7 @@ els.installQwenBtn.addEventListener('click', async () => {
   els.installQwenBtn.disabled = true;
 
   try {
-    const current = qwenAvailability || (await qwenClient.checkAvailability());
-    if (current?.status === 'downloadable') {
+    if (qwenAvailability?.status === 'downloadable') {
       setQwenDownloadProgress(0, true);
       els.qwenStatusDot.className = 'status-dot';
       els.qwenStatusText.textContent = `${model} をダウンロードしています...`;
@@ -1201,30 +1320,7 @@ els.installQwenBtn.addEventListener('click', async () => {
       return;
     }
 
-    const batSource = generateQwenWindowsInstallerBat(model);
-    const blob = new Blob([batSource], { type: 'application/x-bat;charset=utf-8' });
-    const blobUrl = URL.createObjectURL(blob);
-    try {
-      if (chrome.downloads?.download) {
-        await chrome.downloads.download({
-          url: blobUrl,
-          filename: 'install-qwen25vl.bat',
-          saveAs: false
-        });
-      } else {
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = 'install-qwen25vl.bat';
-        a.click();
-      }
-    } finally {
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-    }
-
-    els.qwenInstallHint.textContent =
-      `「install-qwen25vl.bat」をダウンロードしました。ダブルクリックで実行すると Ollama と ${model} の設定・取得が自動で完了します（完了すると自動で切り替わります）。`;
-    els.qwenInstallHint.classList.remove('hidden');
-    startQwenPoll();
+    await downloadQwenInstaller({ asZip: false });
   } catch (error) {
     setQwenDownloadProgress(0, false);
     els.qwenStatusDot.className = 'status-dot error';
@@ -1234,11 +1330,32 @@ els.installQwenBtn.addEventListener('click', async () => {
   }
 });
 
+els.showQwenDownloadBtn.addEventListener('click', () => {
+  if (typeof lastCompletedQwenDownloadId === 'number') {
+    chrome.downloads?.show?.(lastCompletedQwenDownloadId);
+  }
+});
+
+els.openDownloadsPageBtn.addEventListener('click', () => {
+  chrome.tabs?.create?.({ url: 'chrome://downloads' });
+});
+
+els.downloadQwenZipBtn.addEventListener('click', async () => {
+  els.downloadQwenZipBtn.disabled = true;
+  try {
+    await downloadQwenInstaller({ asZip: true });
+  } finally {
+    els.downloadQwenZipBtn.disabled = false;
+  }
+});
+
 els.goalInput.addEventListener('input', schedulePersistPanelState);
 els.goalInput.addEventListener('change', persistPanelState);
 els.playbookSection.addEventListener('toggle', persistPanelState);
 
 window.addEventListener('pagehide', () => {
+  activeQwenDownloadCleanup?.();
+  activeQwenDownloadCleanup = null;
   if (panelSaveTimer) {
     clearTimeout(panelSaveTimer);
     panelSaveTimer = null;

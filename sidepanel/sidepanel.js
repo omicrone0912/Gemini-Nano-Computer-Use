@@ -81,7 +81,6 @@ const els = {
   flagsList: document.getElementById('flagsList'),
   goalInput: document.getElementById('goalInput'),
   executionModeSelect: document.getElementById('executionModeSelect'),
-  maxStepsInput: document.getElementById('maxStepsInput'),
   useVisionCheckbox: document.getElementById('useVisionCheckbox'),
   allowBackgroundCheckbox: document.getElementById('allowBackgroundCheckbox'),
   allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
@@ -233,7 +232,6 @@ async function loadSettings() {
     const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
     const saved = { ...DEFAULT_SETTINGS, ...(stored?.[SETTINGS_STORAGE_KEY] || {}) };
     els.executionModeSelect.value = saved.executionMode;
-    els.maxStepsInput.value = String(saved.maxSteps);
     els.useVisionCheckbox.checked = saved.useVision !== false;
     els.allowBackgroundCheckbox.checked = saved.allowBackgroundExecution !== false;
     els.allowMultiTabCheckbox.checked = saved.allowMultiTab !== false;
@@ -277,11 +275,9 @@ async function saveSettings() {
 }
 
 function collectSettings() {
-  const maxSteps = Math.max(1, Math.min(50, Number(els.maxStepsInput.value) || DEFAULT_SETTINGS.maxSteps));
   return {
     ...DEFAULT_SETTINGS,
     executionMode: els.executionModeSelect.value,
-    maxSteps,
     useVision: Boolean(els.useVisionCheckbox.checked),
     allowBackgroundExecution: Boolean(els.allowBackgroundCheckbox.checked),
     allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked),
@@ -975,7 +971,7 @@ function handleAgentEvent(event, { replaying = false } = {}) {
       break;
     }
     case 'step_started': {
-      els.stepCounter.textContent = `Step ${event.step} / ${event.maxSteps}`;
+      els.stepCounter.textContent = `Step ${event.step}`;
       getOrCreateStepCard(event.step);
       break;
     }
@@ -1112,7 +1108,6 @@ function setRunningUi(isRunning) {
   els.stopBtn.classList.toggle('hidden', !isRunning);
   els.goalInput.disabled = isRunning;
   els.executionModeSelect.disabled = isRunning;
-  els.maxStepsInput.disabled = isRunning;
   els.useVisionCheckbox.disabled = isRunning;
   els.allowBackgroundCheckbox.disabled = isRunning;
   els.allowMultiTabCheckbox.disabled = isRunning;
@@ -1288,7 +1283,6 @@ els.stopBtn.addEventListener('click', () => {
 els.clearLogBtn.addEventListener('click', clearTimeline);
 
 els.executionModeSelect.addEventListener('change', saveSettings);
-els.maxStepsInput.addEventListener('change', saveSettings);
 els.useVisionCheckbox.addEventListener('change', saveSettings);
 els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
 els.allowMultiTabCheckbox.addEventListener('change', saveSettings);

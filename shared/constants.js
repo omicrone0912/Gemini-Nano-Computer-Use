@@ -28,7 +28,6 @@ export const QWEN_USAGE_MODES = Object.freeze({
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
-  maxSteps: 15,
   executionMode: EXECUTION_MODES.AUTO_SAFE,
   useVision: true,
   allowBackgroundExecution: true,

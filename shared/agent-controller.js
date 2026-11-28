@@ -139,7 +139,7 @@ export class AgentController {
     const history = [];
     let currentGoal = goal.trim();
     let loopWarning = '';
-    let finalOutcome = { status: 'max_steps', message: '最大ステップ数に達したため終了しました。', history };
+    let finalOutcome = { status: 'stopped', message: '実行が終了しました。', history };
 
     try {
       this.emit('run_started', { goal: currentGoal, settings: merged });
@@ -158,14 +158,14 @@ export class AgentController {
         apiVariant: initResult.apiVariant
       });
 
-      for (let step = 1; step <= merged.maxSteps; step += 1) {
+      for (let step = 1; ; step += 1) {
         if (signal.aborted) {
           finalOutcome = { status: 'stopped', message: 'ユーザーによって中断されました。', history };
           break;
         }
 
         const stepStart = Date.now();
-        this.emit('step_started', { step, maxSteps: merged.maxSteps });
+        this.emit('step_started', { step });
 
         // 1. Observe
         const observation = await this.observe({
@@ -205,7 +205,6 @@ export class AgentController {
           snapshot,
           history,
           stepIndex: step,
-          maxSteps: merged.maxSteps,
           hasImage: Boolean(image && initResult.multimodal),
           loopWarning,
           pdfContext,

@@ -299,3 +299,53 @@ test('AgentController escalates to ask_user confirmation when action fails under
   assert.equal(confirmDetails.kind, 'ask_user');
   assert.match(confirmDetails.reason, /失敗しました/);
 });
+
+test('AgentController runs without a maxSteps cap until done even beyond 15 steps', async () => {
+  let stepCount = 0;
+  const stepStartedEvents = [];
+
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction() {
+        stepCount += 1;
+        if (stepCount < 25) {
+          return {
+            action: { thought: `step ${stepCount}`, action: 'scroll', direction: 'down' },
+            usage: {}
+          };
+        }
+        return {
+          action: { thought: '完了', action: 'done', message: '25ステップで完了しました' },
+          usage: {}
+        };
+      }
+    },
+    async observe() {
+      return {
+        snapshot: { restricted: false, url: 'https://example.com', elements: [] }
+      };
+    },
+    async executeAction() {
+      return { ok: true, detail: 'scrolled' };
+    },
+    onEvent(ev) {
+      if (ev.type === 'step_started') {
+        stepStartedEvents.push(ev);
+      }
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '最後まで実行する',
+    settings: { maxSteps: 5, actionDelayMs: 0 }
+  });
+
+  assert.equal(outcome.status, 'completed');
+  assert.equal(outcome.history.length, 25);
+  assert.equal(stepStartedEvents.length, 25);
+  assert.equal('maxSteps' in stepStartedEvents[0], false);
+  assert.equal(stepStartedEvents.at(-1).step, 25);
+});

@@ -6,7 +6,6 @@ test('buildStepPrompt includes formatted elements, masked password, and image hi
   const prompt = buildStepPrompt({
     goal: '検索する',
     stepIndex: 2,
-    maxSteps: 10,
     hasImage: true,
     loopWarning: '同じ操作を繰り返さないでください',
     snapshot: {
@@ -26,6 +25,8 @@ test('buildStepPrompt includes formatted elements, masked password, and image hi
     ]
   });
 
+  assert.match(prompt, /# 進行状況\nステップ 2/);
+  assert.doesNotMatch(prompt, /ステップ 2 \/ \d+/);
   assert.match(prompt, /赤枠番号バッジ/);
   assert.match(prompt, /\[1\] input type=text "検索" value="AI"/);
   assert.match(prompt, /\[2\] input type=password "PW" value="\*\*\*"/);

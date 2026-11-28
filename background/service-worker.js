@@ -623,7 +623,7 @@ function recordAndBroadcastEvent(event, extra = {}) {
   }
 
   if (event.type === 'step_started') {
-    setActionBadge(`${event.step}/${event.maxSteps}`, '#2563eb');
+    setActionBadge(String(event.step), '#2563eb');
   } else if (event.type === 'run_finished') {
     bgState.lastOutcome = { status: event.status, message: event.message };
     bgState.running = false;

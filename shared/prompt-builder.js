@@ -100,7 +100,6 @@ export function buildStepPrompt({
   snapshot,
   history = [],
   stepIndex = 1,
-  maxSteps = 15,
   hasImage = false,
   loopWarning = '',
   pdfContext = null,
@@ -110,7 +109,7 @@ export function buildStepPrompt({
 }) {
   const sections = [];
   sections.push(`# 目標\n${goal}`);
-  sections.push(`# 進行状況\nステップ ${stepIndex} / ${maxSteps}`);
+  sections.push(`# 進行状況\nステップ ${stepIndex}`);
 
   if (playbookContext && playbookContext.rawText) {
     const body = truncate(String(playbookContext.rawText).trim(), 2200);

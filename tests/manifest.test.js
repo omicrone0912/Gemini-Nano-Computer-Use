@@ -47,3 +47,24 @@ test('sidepanel.html and offscreen.html contain no inline styles or inline scrip
   assert.doesNotMatch(viewerJs, /\.cssText\b/);
   assert.doesNotMatch(viewerJs, /setAttribute\(\s*['"]style['"]/i);
 });
+
+test('sidepanel.html consolidates settings into #settingsModal triggered by #openSettingsBtn', () => {
+  const html = readFileSync('sidepanel/sidepanel.html', 'utf8');
+  assert.match(html, /id="openSettingsBtn"/);
+  const modalIdx = html.indexOf('id="settingsModal"');
+  assert.ok(modalIdx > -1);
+  const modalSlice = html.slice(modalIdx);
+  for (const id of [
+    'executionModeSelect',
+    'useVisionCheckbox',
+    'allowBackgroundCheckbox',
+    'allowMultiTabCheckbox',
+    'useBuiltInViewerCheckbox',
+    'useQwenFallbackCheckbox',
+    'qwenPanel',
+    'setupGuide'
+  ]) {
+    assert.ok(modalSlice.includes(`id="${id}"`), `Expected #${id} inside #settingsModal`);
+    assert.equal(html.indexOf(`id="${id}"`), modalSlice.indexOf(`id="${id}"`) + modalIdx, `Expected unique #${id}`);
+  }
+});

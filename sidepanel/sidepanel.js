@@ -53,9 +53,12 @@ const SETTINGS_STORAGE_KEY = 'nano_cu_settings_v1';
 
 const els = {
   refreshStatusBtn: document.getElementById('refreshStatusBtn'),
+  openSettingsBtn: document.getElementById('openSettingsBtn'),
   statusDot: document.getElementById('statusDot'),
   statusText: document.getElementById('statusText'),
+  statusActions: document.getElementById('statusActions'),
   downloadModelBtn: document.getElementById('downloadModelBtn'),
+  openSettingsFromStatusBtn: document.getElementById('openSettingsFromStatusBtn'),
   toggleGuideBtn: document.getElementById('toggleGuideBtn'),
   downloadProgressWrap: document.getElementById('downloadProgressWrap'),
   downloadProgressBar: document.getElementById('downloadProgressBar'),
@@ -86,6 +89,9 @@ const els = {
   allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
   useBuiltInViewerCheckbox: document.getElementById('useBuiltInViewerCheckbox'),
   advancedSettingsBadge: document.getElementById('advancedSettingsBadge'),
+  settingsModal: document.getElementById('settingsModal'),
+  settingsModalBackdrop: document.getElementById('settingsModalBackdrop'),
+  closeSettingsBtn: document.getElementById('closeSettingsBtn'),
   runBtn: document.getElementById('runBtn'),
   stopBtn: document.getElementById('stopBtn'),
   clearLogBtn: document.getElementById('clearLogBtn'),
@@ -478,10 +484,31 @@ async function refreshQwenAvailability() {
   return qwenAvailability;
 }
 
+function openSettingsModal() {
+  els.settingsModal.classList.remove('hidden');
+  els.openSettingsBtn.classList.add('active');
+  els.openSettingsBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeSettingsModal() {
+  els.settingsModal.classList.add('hidden');
+  els.openSettingsBtn.classList.remove('active');
+  els.openSettingsBtn.setAttribute('aria-expanded', 'false');
+}
+
+function syncStatusActionsVisibility() {
+  const hasVisibleAction =
+    !els.downloadModelBtn.classList.contains('hidden') ||
+    !els.openSettingsFromStatusBtn.classList.contains('hidden');
+  els.statusActions.classList.toggle('hidden', !hasVisibleAction);
+}
+
 async function refreshAvailability() {
   els.statusDot.className = 'status-dot';
   els.statusText.textContent = 'Gemini Nano の利用可否を確認中...';
   els.downloadModelBtn.classList.add('hidden');
+  els.openSettingsFromStatusBtn.classList.add('hidden');
+  syncStatusActionsVisibility();
 
   const [nanoRes, qwenRes] = await Promise.all([
     nanoClient.checkAvailability(),
@@ -501,7 +528,8 @@ async function refreshAvailability() {
   } else if (qwenAlways) {
     els.statusDot.className = 'status-dot';
     els.statusText.textContent =
-      'Qwen 2.5 VL（常に優先）が選択されています。下のパネルから導入・起動してください。';
+      'Qwen 2.5 VL（常に優先）が選択されています。右上の設定 (⚙) から導入・起動してください。';
+    els.openSettingsFromStatusBtn.classList.remove('hidden');
     els.setupGuide.classList.add('hidden');
   } else if (status === 'available') {
     els.statusDot.classList.add('ok');
@@ -520,13 +548,16 @@ async function refreshAvailability() {
   } else if (qwenEnabled) {
     els.statusDot.className = 'status-dot';
     els.statusText.textContent =
-      'Gemini Nano が利用できません。下の Qwen 2.5 VL「1ステップ導入」からセットアップしてください。';
+      'Gemini Nano が利用できません。右上の設定 (⚙) から Qwen 2.5 VL を導入してください。';
+    els.openSettingsFromStatusBtn.classList.remove('hidden');
     els.setupGuide.classList.add('hidden');
   } else {
     els.statusDot.classList.add('error');
     els.statusText.textContent = message;
+    els.openSettingsFromStatusBtn.classList.remove('hidden');
     els.setupGuide.classList.remove('hidden');
   }
+  syncStatusActionsVisibility();
   updateAdvancedSettingsBadge();
 }
 
@@ -1250,6 +1281,21 @@ function clearTimeline() {
 
 // Event listeners
 els.refreshStatusBtn.addEventListener('click', refreshAvailability);
+els.openSettingsBtn.addEventListener('click', () => {
+  if (els.settingsModal.classList.contains('hidden')) {
+    openSettingsModal();
+  } else {
+    closeSettingsModal();
+  }
+});
+els.openSettingsFromStatusBtn.addEventListener('click', openSettingsModal);
+els.closeSettingsBtn.addEventListener('click', closeSettingsModal);
+els.settingsModalBackdrop.addEventListener('click', closeSettingsModal);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !els.settingsModal.classList.contains('hidden')) {
+    closeSettingsModal();
+  }
+});
 els.toggleGuideBtn.addEventListener('click', () => {
   els.setupGuide.classList.toggle('hidden');
 });

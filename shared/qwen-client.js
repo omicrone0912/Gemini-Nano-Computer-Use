@@ -1,5 +1,6 @@
 import { ACTION_RESPONSE_SCHEMA, parseActionResponse } from './action-schema.js';
-import { QWEN_USAGE_MODES } from './constants.js';
+import { INFERENCE_ENGINES, QWEN_USAGE_MODES } from './constants.js';
+import { resolveInferenceExecution } from './inference-device.js';
 import { buildZipBytes } from './office-parser.js';
 import { uint8ArrayToBase64 } from './pdf-parser.js';
 import { SYSTEM_PROMPT } from './prompt-builder.js';
@@ -382,10 +383,14 @@ export class QwenLocalClient {
   constructor({
     endpoint = QWEN_DEFAULT_ENDPOINT,
     model = QWEN_DEFAULT_MODEL,
+    inferenceEngine = INFERENCE_ENGINES.AUTO,
+    deviceDetection = null,
     fetchImpl = globalThis.fetch
   } = {}) {
     this.endpoint = validateLocalOllamaEndpoint(endpoint);
     this.model = String(model || QWEN_DEFAULT_MODEL);
+    this.inferenceEngine = inferenceEngine || INFERENCE_ENGINES.AUTO;
+    this.deviceDetection = deviceDetection || null;
     this.fetch = typeof fetchImpl === 'function' ? fetchImpl.bind(globalThis) : null;
     this.systemPrompt = SYSTEM_PROMPT;
     this.multimodalEnabled = true;
@@ -393,12 +398,18 @@ export class QwenLocalClient {
     this.activeAbortController = null;
   }
 
-  configure({ endpoint, model } = {}) {
+  configure({ endpoint, model, inferenceEngine, deviceDetection } = {}) {
     if (endpoint !== undefined) {
       this.endpoint = validateLocalOllamaEndpoint(endpoint);
     }
     if (model !== undefined && model) {
       this.model = String(model);
+    }
+    if (inferenceEngine !== undefined && inferenceEngine) {
+      this.inferenceEngine = String(inferenceEngine);
+    }
+    if (deviceDetection !== undefined) {
+      this.deviceDetection = deviceDetection;
     }
   }
 
@@ -557,9 +568,17 @@ export class QwenLocalClient {
     return { ok: true, model: targetModel };
   }
 
-  async initialize({ useVision = true, systemPrompt = SYSTEM_PROMPT, onDownloadProgress, signal } = {}) {
+  async initialize({
+    useVision = true,
+    systemPrompt = SYSTEM_PROMPT,
+    inferenceEngine,
+    deviceDetection,
+    onDownloadProgress,
+    signal
+  } = {}) {
     this.systemPrompt = systemPrompt || SYSTEM_PROMPT;
     this.multimodalEnabled = Boolean(useVision);
+    this.configure({ inferenceEngine, deviceDetection });
 
     const status = await this.checkAvailability({ signal });
     if (status.status === 'needs_ollama' || status.status === 'cors_blocked') {
@@ -569,10 +588,16 @@ export class QwenLocalClient {
       await this.installModel({ model: this.model, onDownloadProgress, signal });
     }
 
+    const resolvedInference = resolveInferenceExecution({
+      requestedEngine: this.inferenceEngine,
+      detection: this.deviceDetection
+    });
+
     return {
       multimodal: this.multimodalEnabled,
       apiVariant: this.apiVariant,
-      model: this.model
+      model: this.model,
+      inferenceEngine: resolvedInference.effectiveEngine
     };
   }
 
@@ -605,6 +630,11 @@ export class QwenLocalClient {
       }
     }
 
+    const resolvedInference = resolveInferenceExecution({
+      requestedEngine: this.inferenceEngine,
+      detection: this.deviceDetection
+    });
+
     const buildBody = ({ includeMain, includeRefs, format }) => {
       const images = [];
       let content = promptText;
@@ -627,7 +657,7 @@ export class QwenLocalClient {
         model: this.model,
         stream: false,
         format,
-        options: { temperature: 0.1 },
+        options: { temperature: 0.1, ...resolvedInference.ollamaOptions },
         messages: [
           { role: 'system', content: this.systemPrompt },
           userMsg
@@ -713,7 +743,8 @@ export class QwenLocalClient {
           inputQuota: null,
           usedConstraint,
           usedVision,
-          provider: 'qwen2.5-vl'
+          provider: 'qwen2.5-vl',
+          inferenceEngine: resolvedInference.effectiveEngine
         }
       };
     } finally {

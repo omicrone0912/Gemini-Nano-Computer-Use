@@ -28,8 +28,17 @@ export const QWEN_USAGE_MODES = Object.freeze({
   ALWAYS: 'always'
 });
 
+export const INFERENCE_ENGINES = Object.freeze({
+  AUTO: 'auto',
+  CPU: 'cpu',
+  GPU_INTEGRATED: 'gpu_integrated',
+  GPU_PCIE: 'gpu_pcie',
+  NPU: 'npu'
+});
+
 export const DEFAULT_SETTINGS = Object.freeze({
   executionMode: EXECUTION_MODES.AUTO_SAFE,
+  inferenceEngine: INFERENCE_ENGINES.AUTO,
   useVision: true,
   allowBackgroundExecution: true,
   allowMultiTab: true,

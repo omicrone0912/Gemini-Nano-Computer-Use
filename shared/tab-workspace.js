@@ -9,6 +9,7 @@ export class TabWorkspaceManager {
     this.windowId = null;
     this.managedTabIds = [];
     this.currentTabId = null;
+    this.referenceTab = null;
     this.groupTitle = 'Nano AI';
     this.groupColor = 'blue';
     this.backgroundMode = false;
@@ -20,6 +21,7 @@ export class TabWorkspaceManager {
     this.windowId = null;
     this.managedTabIds = [];
     this.currentTabId = null;
+    this.referenceTab = null;
   }
 
   async _ensureTabExists(tabId) {
@@ -77,7 +79,9 @@ export class TabWorkspaceManager {
   }
 
   async initialize({
-    initialTab,
+    initialTab = null,
+    startUrl = '',
+    windowId = null,
     multiTabEnabled = true,
     backgroundMode = true,
     groupTitle = 'Nano AI',
@@ -88,29 +92,31 @@ export class TabWorkspaceManager {
     this.backgroundMode = Boolean(backgroundMode);
     this.groupTitle = groupTitle || 'Nano AI';
     this.groupColor = groupColor || 'blue';
+    this.windowId = initialTab?.windowId ?? windowId ?? null;
+    this.referenceTab =
+      initialTab?.url && /^https?:/i.test(initialTab.url)
+        ? { title: initialTab.title || '', url: initialTab.url }
+        : null;
+
+    if (this.multiTabEnabled) {
+      const targetUrl = startUrl && /^https?:/i.test(startUrl) ? startUrl : 'about:blank';
+      const workingTab = await this.chrome.tabs.create({
+        windowId: this.windowId ?? undefined,
+        url: targetUrl,
+        active: !this.backgroundMode
+      });
+      this.managedTabIds = [workingTab.id];
+      this.currentTabId = workingTab.id;
+      await this._ensureGroupForTab(workingTab.id);
+      return this.getWorkspaceContext();
+    }
 
     if (!initialTab?.id) {
       throw new Error('初期化対象のタブが見つかりません。');
     }
 
-    this.windowId = initialTab.windowId ?? null;
-    let workingTab = initialTab;
-
-    // Pinned tabs cannot be placed in a Chrome Tab Group; open a clean workspace tab
-    if (this.multiTabEnabled && initialTab.pinned) {
-      workingTab = await this.chrome.tabs.create({
-        windowId: this.windowId ?? undefined,
-        url: initialTab.url && /^https?:/i.test(initialTab.url) ? initialTab.url : 'about:blank',
-        active: !this.backgroundMode
-      });
-    }
-
-    this.managedTabIds = [workingTab.id];
-    this.currentTabId = workingTab.id;
-
-    if (this.multiTabEnabled) {
-      await this._ensureGroupForTab(workingTab.id);
-    }
+    this.managedTabIds = [initialTab.id];
+    this.currentTabId = initialTab.id;
 
     return this.getWorkspaceContext();
   }
@@ -312,6 +318,7 @@ export class TabWorkspaceManager {
       multiTabEnabled: this.multiTabEnabled,
       backgroundMode: this.backgroundMode,
       currentTabId: this.currentTabId,
+      referenceTab: this.referenceTab,
       tabs
     };
   }

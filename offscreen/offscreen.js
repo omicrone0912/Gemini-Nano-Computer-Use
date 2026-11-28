@@ -1,4 +1,5 @@
 import { MSG_TYPES } from '../shared/constants.js';
+import { detectInferenceDevices } from '../shared/inference-device.js';
 import { NanoClient } from '../shared/nano-client.js';
 import { QwenLocalClient } from '../shared/qwen-client.js';
 import { annotateScreenshot } from '../sidepanel/annotator.js';
@@ -26,11 +27,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           };
 
           let result;
+          const deviceDetection = message.deviceDetection || (await detectInferenceDevices(globalThis));
           if (message.provider === 'qwen_local') {
             await nanoClient.destroy().catch(() => {});
             const qwenClient = new QwenLocalClient({
               endpoint: message.qwenEndpoint,
-              model: message.qwenModel
+              model: message.qwenModel,
+              inferenceEngine: message.inferenceEngine,
+              deviceDetection
             });
             result = await qwenClient.initialize({
               useVision: Boolean(message.useVision),
@@ -55,7 +59,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               }
               const qwenClient = new QwenLocalClient({
                 endpoint: message.qwenEndpoint,
-                model: message.qwenModel
+                model: message.qwenModel,
+                inferenceEngine: message.inferenceEngine,
+                deviceDetection
               });
               result = await qwenClient.initialize({
                 useVision: Boolean(message.useVision),

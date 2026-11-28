@@ -44,6 +44,24 @@ test('buildStepPrompt guides navigation on restricted pages', () => {
   assert.match(prompt, /navigate/);
 });
 
+test('buildStepPrompt guides blank workspace tab with optional referenceTab URL', () => {
+  const prompt = buildStepPrompt({
+    goal: '今のページを要約する',
+    snapshot: { restricted: true, url: 'about:blank', title: '', elements: [] },
+    workspaceContext: {
+      multiTabEnabled: true,
+      backgroundMode: true,
+      groupTitle: 'Nano AI',
+      referenceTab: { title: '元のページ', url: 'https://ref.example/article' },
+      tabs: [{ index: 1, title: 'about:blank', url: 'about:blank', isCurrent: true }]
+    }
+  });
+
+  assert.match(prompt, /新規作成された作業用タブグループ内の空きタブ/);
+  assert.match(prompt, /元のページ/);
+  assert.match(prompt, /https:\/\/ref\.example\/article/);
+});
+
 test('buildStepPrompt includes loaded PDF context when present', () => {
   const prompt = buildStepPrompt({
     goal: 'PDFを要約する',

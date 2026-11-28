@@ -695,7 +695,9 @@ function createOffscreenNanoAdapter() {
       provider = 'auto',
       useQwenFallback = false,
       qwenModel,
-      qwenEndpoint
+      qwenEndpoint,
+      inferenceEngine,
+      deviceDetection = null
     }) {
       await ensureOffscreenDocument();
       const res = await chrome.runtime.sendMessage({
@@ -706,7 +708,9 @@ function createOffscreenNanoAdapter() {
         provider,
         useQwenFallback,
         qwenModel,
-        qwenEndpoint
+        qwenEndpoint,
+        inferenceEngine,
+        deviceDetection
       });
       if (!res?.ok) {
         throw new Error(res?.error || 'Offscreen AI の初期化に失敗しました。');
@@ -982,13 +986,14 @@ async function executeWorkspaceAction(action) {
   }
 }
 
-async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = null, initialPlaybook = null }) {
+async function startBackgroundRun({ tabId = null, startUrl = '', goal, settings = {}, initialPdf = null, initialPlaybook = null }) {
   if (bgState.running) {
     return { ok: false, error: 'すでにバックグラウンドでタスクを実行中です。' };
   }
 
   const merged = { ...DEFAULT_SETTINGS, ...settings };
-  const initialTab = await chrome.tabs.get(tabId);
+  const initialTab = typeof tabId === 'number' ? await chrome.tabs.get(tabId).catch(() => null) : null;
+  const effectiveStartUrl = startUrl || initialPlaybook?.startUrl || '';
 
   const nanoAdapter = createOffscreenNanoAdapter();
   const resolvedProvider =
@@ -1005,7 +1010,9 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
       provider: resolvedProvider,
       useQwenFallback: Boolean(merged.useQwenFallback),
       qwenModel: merged.qwenModel,
-      qwenEndpoint: merged.qwenEndpoint
+      qwenEndpoint: merged.qwenEndpoint,
+      inferenceEngine: merged.inferenceEngine,
+      deviceDetection: merged.deviceDetection || null
     });
   } catch (error) {
     return {
@@ -1017,11 +1024,15 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
 
   const wsContext = await workspace.initialize({
     initialTab,
+    startUrl: effectiveStartUrl,
     multiTabEnabled: merged.allowMultiTab,
     backgroundMode: merged.allowBackgroundExecution,
     groupTitle: merged.tabGroupTitle,
     groupColor: merged.tabGroupColor
   });
+  if (merged.allowMultiTab && effectiveStartUrl && /^https?:/i.test(effectiveStartUrl) && wsContext?.currentTabId) {
+    await waitForTabComplete(wsContext.currentTabId, 10000);
+  }
 
   bgState.running = true;
   startKeepAlive();
@@ -1185,14 +1196,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         case MSG_TYPES.INIT_WORKSPACE: {
-          const initialTab = await chrome.tabs.get(message.tabId);
+          const initialTab =
+            typeof message.tabId === 'number' ? await chrome.tabs.get(message.tabId).catch(() => null) : null;
           const ws = await workspace.initialize({
             initialTab,
+            startUrl: message.startUrl || '',
             multiTabEnabled: Boolean(message.multiTabEnabled),
             backgroundMode: Boolean(message.backgroundMode),
             groupTitle: message.groupTitle || 'Nano AI',
             groupColor: message.groupColor || 'blue'
           });
+          if (
+            message.multiTabEnabled &&
+            message.startUrl &&
+            /^https?:/i.test(message.startUrl) &&
+            ws?.currentTabId
+          ) {
+            await waitForTabComplete(ws.currentTabId, 10000);
+          }
           sendResponse({ ok: true, workspace: ws });
           break;
         }
@@ -1231,7 +1252,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         case MSG_TYPES.START_BACKGROUND_RUN: {
           const res = await startBackgroundRun({
-            tabId: message.tabId,
+            tabId: message.tabId ?? null,
+            startUrl: message.startUrl || '',
             goal: message.goal,
             settings: message.settings,
             initialPdf: message.initialPdf || null,
@@ -1305,19 +1327,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const stored = await chrome.storage.local.get('nano_cu_settings_v1').catch(() => ({}));
           const settings = { ...DEFAULT_SETTINGS, ...(stored?.nano_cu_settings_v1 || {}), ...(message.settings || {}) };
 
-          let targetTab = null;
-          if (preset.startUrl) {
+          const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          let targetTab = active || null;
+          if (!settings.allowMultiTab && preset.startUrl) {
             targetTab = await chrome.tabs.create({
               url: preset.startUrl,
               active: !settings.allowBackgroundExecution
             });
             await waitForTabComplete(targetTab.id, 10000);
-          } else {
-            const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-            targetTab = active;
           }
 
-          if (!targetTab?.id) {
+          if (!settings.allowMultiTab && !targetTab?.id) {
             sendResponse({ ok: false, error: '実行対象のタブが見つかりません。' });
             break;
           }
@@ -1327,7 +1347,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             `フローチャートプリセット「${preset.name}」の条件分岐とステップに従って実行してください。`;
 
           const res = await startBackgroundRun({
-            tabId: targetTab.id,
+            tabId: targetTab?.id ?? null,
+            startUrl: preset.startUrl || '',
             goal,
             settings,
             initialPlaybook: compiledPlaybook

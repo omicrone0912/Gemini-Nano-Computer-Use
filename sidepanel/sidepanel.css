@@ -863,6 +863,89 @@ textarea {
   border-radius: 6px;
 }
 
+.settings-hint-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.detected-devices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.detected-device-loading {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.detected-device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+
+.detected-device-row.detected {
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.detected-device-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.detected-device-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.detected-device-name {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detected-device-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.detected-device-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.detected-device-badge.ok {
+  border-color: rgba(22, 163, 74, 0.4);
+  color: var(--success);
+  background: rgba(22, 163, 74, 0.1);
+}
+
+.detected-device-badge.rec {
+  border-color: rgba(37, 99, 235, 0.45);
+  color: var(--primary);
+  background: rgba(37, 99, 235, 0.12);
+}
+
 .image-modal {
   position: fixed;
   inset: 0;

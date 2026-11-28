@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QWEN_USAGE_MODES } from '../shared/constants.js';
+import { INFERENCE_ENGINES, QWEN_USAGE_MODES } from '../shared/constants.js';
 import { readZipEntries } from '../shared/office-parser.js';
 import { base64ToUint8Array } from '../shared/pdf-parser.js';
 import {
@@ -340,4 +340,40 @@ test('resolveAiProvider respects disabled, fallback, and always-prioritize Qwen 
     resolveAiProvider({ useQwenFallback: true, qwenUsageMode: QWEN_USAGE_MODES.ALWAYS, nanoStatus: 'unavailable' }),
     { provider: 'qwen_local', useQwenNow: true, useQwenFallback: true, mode: QWEN_USAGE_MODES.ALWAYS }
   );
+});
+
+test('QwenLocalClient applies inferenceEngine Ollama options (num_gpu / num_thread)', async () => {
+  const bodies = [];
+  const client = new QwenLocalClient({
+    model: 'qwen2.5vl:3b',
+    inferenceEngine: INFERENCE_ENGINES.CPU,
+    deviceDetection: {
+      recommendedEngine: INFERENCE_ENGINES.GPU_PCIE,
+      devices: {
+        cpu: { available: true, cores: 16 },
+        gpu_integrated: { available: true },
+        gpu_pcie: { available: true },
+        npu: { available: false }
+      }
+    },
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(
+        JSON.stringify({
+          message: { content: JSON.stringify({ thought: 'ok', action: 'done', message: '完了' }) }
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+  });
+
+  const cpuRes = await client.decideAction({ promptText: 'test' });
+  assert.equal(bodies[0].options.num_gpu, 0);
+  assert.equal(bodies[0].options.num_thread, 8);
+  assert.equal(cpuRes.usage.inferenceEngine, INFERENCE_ENGINES.CPU);
+
+  client.configure({ inferenceEngine: INFERENCE_ENGINES.GPU_PCIE });
+  const gpuRes = await client.decideAction({ promptText: 'test' });
+  assert.equal(bodies[1].options.num_gpu, -1);
+  assert.equal(gpuRes.usage.inferenceEngine, INFERENCE_ENGINES.GPU_PCIE);
 });

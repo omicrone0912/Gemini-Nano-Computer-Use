@@ -125,9 +125,21 @@ export function buildStepPrompt({
   }
 
   if (snapshot?.restricted) {
-    sections.push(
-      `# 現在のページ\nURL: ${snapshot.url || '(不明)'}\nタイトル: ${snapshot.title || '(制限ページ)'}\n※ このページは Chrome の保護領域（chrome:// や拡張機能ストア等）のため、ページ内の DOM 取得やクリック操作ができません。目的の Web サイトがある場合は "navigate" アクションで http/https URL へ移動してください。`
-    );
+    const isBlankWorkspace = String(snapshot.url || '').toLowerCase() === 'about:blank';
+    const refTab = workspaceContext?.referenceTab;
+    const refNote =
+      isBlankWorkspace && refTab?.url
+        ? `\n（参考: 実行開始時にユーザーが開いていたタブ: ${truncate(refTab.title || '(無題)', 80)} | ${refTab.url} — 「現在のページ」を対象とする指示の場合は、この URL を navigate で開いて操作してください）`
+        : '';
+    if (isBlankWorkspace) {
+      sections.push(
+        `# 現在のページ\nURL: about:blank\nタイトル: 新規作業タブ\n※ 新規作成された作業用タブグループ内の空きタブです。作業対象の http/https URL へ "navigate"（または "open_tab"）で移動してから操作を開始してください。${refNote}`
+      );
+    } else {
+      sections.push(
+        `# 現在のページ\nURL: ${snapshot.url || '(不明)'}\nタイトル: ${snapshot.title || '(制限ページ)'}\n※ このページは Chrome の保護領域（chrome:// や拡張機能ストア等）のため、ページ内の DOM 取得やクリック操作ができません。目的の Web サイトがある場合は "navigate" アクションで http/https URL へ移動してください。`
+      );
+    }
   } else {
     const scrollInfo = snapshot?.scroll
       ? `scrollY=${Math.round(snapshot.scroll.y)} / max=${Math.round(snapshot.scroll.maxY)}`

@@ -240,12 +240,34 @@
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="allowMultiTabCheckbox" checked />
-              <span>複数タブ作業を許可（自動でタブグループ「Nano AI」を作成）</span>
+              <span>新規タブグループ「Nano AI」で作業（アクティブタブは変更せず、必要に応じてタブを作成）</span>
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="useBuiltInViewerCheckbox" checked />
               <span>画像・動画・PDF・AIファイルを簡易ビュワー（別タブ）で開く</span>
             </label>
+          </div>
+        </section>
+
+        <section class="settings-section" id="inferenceEngineSection">
+          <div class="settings-section-header">
+            <h3>推論エンジン（デバイス自動検出）</h3>
+            <button id="redetectDeviceBtn" class="btn btn-ghost btn-xs" type="button">再検出</button>
+          </div>
+          <div id="detectedDevicesList" class="detected-devices-list">
+            <div class="detected-device-loading">デバイスを自動検出しています...</div>
+          </div>
+          <div class="control-item">
+            <label for="inferenceEngineSelect">使用する推論エンジン</label>
+            <select id="inferenceEngineSelect" aria-label="使用する推論エンジン">
+              <option value="auto">自動選択（検出された最適デバイス）</option>
+              <option value="cpu">CPU</option>
+              <option value="gpu_integrated">GPU（CPU内蔵）</option>
+              <option value="gpu_pcie">GPU（PCIe）</option>
+              <option value="npu">NPU</option>
+            </select>
+            <p id="inferenceEngineNote" class="settings-hint-note"></p>
+            <p id="inferenceEngineWarning" class="settings-warning-note hidden"></p>
           </div>
         </section>
 

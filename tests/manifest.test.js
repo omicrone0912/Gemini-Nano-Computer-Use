@@ -60,6 +60,9 @@ test('sidepanel.html consolidates settings into #settingsModal triggered by #ope
     'allowBackgroundCheckbox',
     'allowMultiTabCheckbox',
     'useBuiltInViewerCheckbox',
+    'redetectDeviceBtn',
+    'detectedDevicesList',
+    'inferenceEngineSelect',
     'useQwenFallbackCheckbox',
     'qwenPanel',
     'setupGuide'

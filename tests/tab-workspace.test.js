@@ -12,7 +12,7 @@ function createMockChrome() {
     _tabs: tabs,
     _groups: groups,
     seedTab(tab) {
-      tabs.set(tab.id, { ...tab });
+      tabs.set(tab.id, { groupId: -1, ...tab });
     },
     tabs: {
       async get(tabId) {
@@ -81,23 +81,31 @@ function createMockChrome() {
   return api;
 }
 
-test('TabWorkspaceManager creates tab group on initialize and opens background tabs in the same group', async () => {
+test('TabWorkspaceManager creates a new tab in a new tab group without grouping the active tab', async () => {
   const mockChrome = createMockChrome();
   mockChrome.seedTab({ id: 10, windowId: 1, url: 'https://example.com', title: 'Home', active: true, pinned: false });
 
   const mgr = new TabWorkspaceManager(mockChrome);
   const ws1 = await mgr.initialize({
-    initialTab: { id: 10, windowId: 1, url: 'https://example.com', pinned: false },
+    initialTab: { id: 10, windowId: 1, title: 'Home', url: 'https://example.com', pinned: false },
     multiTabEnabled: true,
     backgroundMode: true,
     groupTitle: 'Nano AI',
     groupColor: 'blue'
   });
 
+  // Active tab remains ungrouped and untouched
+  assert.equal(mockChrome._tabs.get(10).groupId, -1);
+  assert.equal(mockChrome._tabs.get(10).active, true);
+
   assert.equal(ws1.groupId, 500);
   assert.equal(mockChrome._groups.get(500).title, 'Nano AI');
   assert.equal(mockChrome._groups.get(500).color, 'blue');
   assert.equal(ws1.tabs.length, 1);
+  assert.notEqual(ws1.currentTabId, 10);
+  assert.equal(mockChrome._tabs.get(ws1.currentTabId).url, 'about:blank');
+  assert.equal(mockChrome._tabs.get(ws1.currentTabId).active, false);
+  assert.deepEqual(ws1.referenceTab, { title: 'Home', url: 'https://example.com' });
 
   const opened = await mgr.openTab('https://ja.wikipedia.org');
   assert.equal(opened.tab.active, false);
@@ -106,34 +114,41 @@ test('TabWorkspaceManager creates tab group on initialize and opens background t
   assert.equal(opened.workspace.currentTabId, opened.tab.id);
 });
 
-test('TabWorkspaceManager enforces managed tab boundaries on switch and close', async () => {
+test('TabWorkspaceManager opens startUrl in new group tab and enforces managed tab boundaries', async () => {
   const mockChrome = createMockChrome();
-  mockChrome.seedTab({ id: 10, windowId: 1, url: 'https://a.example', title: 'A', active: true, pinned: false });
+  mockChrome.seedTab({ id: 10, windowId: 1, url: 'https://user-active.example', title: 'Active', active: true, pinned: false });
   mockChrome.seedTab({ id: 99, windowId: 1, url: 'https://other.example', title: 'Other', active: false, pinned: false });
 
   const mgr = new TabWorkspaceManager(mockChrome);
-  await mgr.initialize({
-    initialTab: { id: 10, windowId: 1, url: 'https://a.example', pinned: false },
+  const ws = await mgr.initialize({
+    initialTab: { id: 10, windowId: 1, title: 'Active', url: 'https://user-active.example', pinned: false },
+    startUrl: 'https://a.example',
     multiTabEnabled: true,
     backgroundMode: false
   });
 
+  const firstWorkspaceTabId = ws.currentTabId;
+  assert.notEqual(firstWorkspaceTabId, 10);
+  assert.equal(mockChrome._tabs.get(10).groupId, -1);
+  assert.equal(mockChrome._tabs.get(firstWorkspaceTabId).url, 'https://a.example');
+
   // Cannot close the last tab in group
   await assert.rejects(() => mgr.closeTab({ tabIndex: 1 }), /最後のタブ/);
 
-  // Cannot switch to unmanaged tab
+  // Cannot switch to user's active tab or unmanaged tab
+  await assert.rejects(() => mgr.switchTab({ tabId: 10 }), /作業グループ内に見つかりません/);
   await assert.rejects(() => mgr.switchTab({ tabId: 99 }), /作業グループ内に見つかりません/);
 
   const opened = await mgr.openTab('https://b.example');
   const switched = await mgr.switchTab({ tabIndex: 1 });
-  assert.equal(switched.tab.id, 10);
+  assert.equal(switched.tab.id, firstWorkspaceTabId);
 
   const closed = await mgr.closeTab({ tabIndex: 2 });
   assert.equal(closed.closedTabId, opened.tab.id);
   assert.equal(closed.workspace.tabs.length, 1);
 });
 
-test('TabWorkspaceManager creates fresh workspace tab when initial tab is pinned and adopts child tabs', async () => {
+test('TabWorkspaceManager works with pinned initial tab, adopts child tabs into new group, and supports single-tab mode', async () => {
   const mockChrome = createMockChrome();
   mockChrome.seedTab({ id: 1, windowId: 1, url: 'https://pinned.example', title: 'Pinned', active: true, pinned: true });
 
@@ -146,6 +161,7 @@ test('TabWorkspaceManager creates fresh workspace tab when initial tab is pinned
 
   assert.notEqual(ws.currentTabId, 1);
   assert.equal(ws.groupId, 500);
+  assert.equal(mockChrome._tabs.get(1).groupId, -1);
 
   // Simulate child tab opened via target="_blank" from workspace tab
   const childTab = { id: 200, windowId: 1, openerTabId: ws.currentTabId, url: 'https://child.example', active: false };
@@ -160,4 +176,15 @@ test('TabWorkspaceManager creates fresh workspace tab when initial tab is pinned
   assert.equal(removed, true);
   const after = await mgr.getWorkspaceContext();
   assert.equal(after.tabs.length, 1);
+
+  // When multiTabEnabled is false, operate on initialTab without creating a group
+  const singleMgr = new TabWorkspaceManager(mockChrome);
+  const singleWs = await singleMgr.initialize({
+    initialTab: { id: 1, windowId: 1, url: 'https://pinned.example', pinned: true },
+    multiTabEnabled: false,
+    backgroundMode: false
+  });
+  assert.equal(singleWs.groupId, null);
+  assert.equal(singleWs.currentTabId, 1);
+  assert.equal(singleWs.tabs.length, 1);
 });

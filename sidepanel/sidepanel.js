@@ -4,9 +4,15 @@ import {
   DEFAULT_SETTINGS,
   EXECUTION_MODES,
   FLOW_PRESETS_STORAGE_KEY,
+  INFERENCE_ENGINES,
   MSG_TYPES,
   QWEN_USAGE_MODES
 } from '../shared/constants.js';
+import {
+  INFERENCE_ENGINE_LABELS,
+  detectInferenceDevices,
+  resolveInferenceExecution
+} from '../shared/inference-device.js';
 import { NanoClient } from '../shared/nano-client.js';
 import {
   QWEN_DEFAULT_ENDPOINT,
@@ -90,6 +96,11 @@ const els = {
   allowBackgroundCheckbox: document.getElementById('allowBackgroundCheckbox'),
   allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
   useBuiltInViewerCheckbox: document.getElementById('useBuiltInViewerCheckbox'),
+  redetectDeviceBtn: document.getElementById('redetectDeviceBtn'),
+  detectedDevicesList: document.getElementById('detectedDevicesList'),
+  inferenceEngineSelect: document.getElementById('inferenceEngineSelect'),
+  inferenceEngineNote: document.getElementById('inferenceEngineNote'),
+  inferenceEngineWarning: document.getElementById('inferenceEngineWarning'),
   advancedSettingsBadge: document.getElementById('advancedSettingsBadge'),
   settingsModal: document.getElementById('settingsModal'),
   settingsModalBackdrop: document.getElementById('settingsModalBackdrop'),
@@ -168,6 +179,7 @@ let qwenPollTimer = null;
 let qwenPollStartedAt = 0;
 let activeQwenDownloadCleanup = null;
 let lastCompletedQwenDownloadId = null;
+let detectedHardware = null;
 let loadedPdf = null;
 let loadedPlaybook = null;
 let activeMainTab = 'agent';
@@ -243,6 +255,104 @@ function updateExecutionModeWarning() {
   );
 }
 
+function updateInferenceEngineNote() {
+  if (!els.inferenceEngineNote || !els.inferenceEngineWarning) return;
+  const resolved = resolveInferenceExecution({
+    requestedEngine: els.inferenceEngineSelect?.value || INFERENCE_ENGINES.AUTO,
+    detection: detectedHardware
+  });
+  els.inferenceEngineNote.textContent = `${resolved.note}（Chrome 内蔵 Gemini Nano は Chrome 側で自動選択されます）`;
+  els.inferenceEngineWarning.textContent = resolved.warning || '';
+  els.inferenceEngineWarning.classList.toggle('hidden', !resolved.warning);
+}
+
+function renderDetectedDevices(detection) {
+  if (!els.detectedDevicesList) return;
+  els.detectedDevicesList.innerHTML = '';
+
+  const order = [
+    INFERENCE_ENGINES.CPU,
+    INFERENCE_ENGINES.GPU_INTEGRATED,
+    INFERENCE_ENGINES.GPU_PCIE,
+    INFERENCE_ENGINES.NPU
+  ];
+
+  for (const key of order) {
+    const info = detection?.devices?.[key] || { available: false, name: '', detail: '' };
+    const row = document.createElement('div');
+    row.className = `detected-device-row${info.available ? ' detected' : ''}`;
+
+    const main = document.createElement('div');
+    main.className = 'detected-device-main';
+
+    const labelEl = document.createElement('div');
+    labelEl.className = 'detected-device-label';
+    labelEl.textContent = INFERENCE_ENGINE_LABELS[key] || key;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'detected-device-name';
+    nameEl.textContent = info.name || info.detail || (info.available ? '検出済み' : '未検出');
+    nameEl.title = nameEl.textContent;
+
+    main.appendChild(labelEl);
+    main.appendChild(nameEl);
+
+    const badges = document.createElement('div');
+    badges.className = 'detected-device-badges';
+
+    if (detection?.recommendedEngine === key) {
+      const recBadge = document.createElement('span');
+      recBadge.className = 'detected-device-badge rec';
+      recBadge.textContent = '推奨';
+      badges.appendChild(recBadge);
+    }
+
+    const statusBadge = document.createElement('span');
+    statusBadge.className = `detected-device-badge${info.available ? ' ok' : ''}`;
+    statusBadge.textContent = info.available ? '検出済み' : '未検出';
+    badges.appendChild(statusBadge);
+
+    row.appendChild(main);
+    row.appendChild(badges);
+    els.detectedDevicesList.appendChild(row);
+  }
+
+  if (els.inferenceEngineSelect) {
+    const recLabel = INFERENCE_ENGINE_LABELS[detection?.recommendedEngine] || INFERENCE_ENGINE_LABELS.cpu;
+    for (const opt of els.inferenceEngineSelect.options) {
+      if (opt.value === INFERENCE_ENGINES.AUTO) {
+        opt.textContent = `自動選択（推奨: ${recLabel}）`;
+      } else {
+        const info = detection?.devices?.[opt.value];
+        const base = INFERENCE_ENGINE_LABELS[opt.value] || opt.value;
+        opt.textContent = info?.available
+          ? `${base}（検出済み${info.name ? `: ${info.name}` : ''}）`
+          : `${base}（未検出）`;
+      }
+    }
+  }
+
+  updateInferenceEngineNote();
+}
+
+async function refreshDetectedHardware() {
+  if (els.redetectDeviceBtn) {
+    els.redetectDeviceBtn.disabled = true;
+  }
+  try {
+    detectedHardware = await detectInferenceDevices(globalThis);
+    renderDetectedDevices(detectedHardware);
+    qwenClient.configure({
+      inferenceEngine: els.inferenceEngineSelect?.value || INFERENCE_ENGINES.AUTO,
+      deviceDetection: detectedHardware
+    });
+  } finally {
+    if (els.redetectDeviceBtn) {
+      els.redetectDeviceBtn.disabled = false;
+    }
+  }
+}
+
 async function loadSettings() {
   try {
     const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
@@ -251,6 +361,10 @@ async function loadSettings() {
     els.executionModeSelect.value = validModes.includes(saved.executionMode)
       ? saved.executionMode
       : DEFAULT_SETTINGS.executionMode;
+    const validEngines = Object.values(INFERENCE_ENGINES);
+    els.inferenceEngineSelect.value = validEngines.includes(saved.inferenceEngine)
+      ? saved.inferenceEngine
+      : DEFAULT_SETTINGS.inferenceEngine;
     els.useVisionCheckbox.checked = saved.useVision !== false;
     els.allowBackgroundCheckbox.checked = saved.allowBackgroundExecution !== false;
     els.allowMultiTabCheckbox.checked = saved.allowMultiTab !== false;
@@ -261,13 +375,16 @@ async function loadSettings() {
     els.qwenModelSelect.value = saved.qwenModel || QWEN_DEFAULT_MODEL;
     qwenClient.configure({
       endpoint: saved.qwenEndpoint || QWEN_DEFAULT_ENDPOINT,
-      model: els.qwenModelSelect.value
+      model: els.qwenModelSelect.value,
+      inferenceEngine: els.inferenceEngineSelect.value,
+      deviceDetection: detectedHardware
     });
     els.qwenPanel.classList.toggle('hidden', !els.useQwenFallbackCheckbox.checked);
   } catch {
     // Ignore storage error
   }
   updateExecutionModeWarning();
+  updateInferenceEngineNote();
   updateAdvancedSettingsBadge();
 }
 
@@ -296,9 +413,12 @@ async function saveSettings() {
 }
 
 function collectSettings() {
+  const validEngines = Object.values(INFERENCE_ENGINES);
+  const rawEngine = els.inferenceEngineSelect?.value;
   return {
     ...DEFAULT_SETTINGS,
     executionMode: els.executionModeSelect.value,
+    inferenceEngine: validEngines.includes(rawEngine) ? rawEngine : INFERENCE_ENGINES.AUTO,
     useVision: Boolean(els.useVisionCheckbox.checked),
     allowBackgroundExecution: Boolean(els.allowBackgroundCheckbox.checked),
     allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked),
@@ -1154,6 +1274,8 @@ function setRunningUi(isRunning) {
   els.stopBtn.classList.toggle('hidden', !isRunning);
   els.goalInput.disabled = isRunning;
   els.executionModeSelect.disabled = isRunning;
+  if (els.inferenceEngineSelect) els.inferenceEngineSelect.disabled = isRunning;
+  if (els.redetectDeviceBtn) els.redetectDeviceBtn.disabled = isRunning;
   els.useVisionCheckbox.disabled = isRunning;
   els.allowBackgroundCheckbox.disabled = isRunning;
   els.allowMultiTabCheckbox.disabled = isRunning;
@@ -1163,7 +1285,7 @@ function setRunningUi(isRunning) {
   els.qwenModelSelect.disabled = isRunning;
 }
 
-async function startRun() {
+async function startRun({ startUrl = '' } = {}) {
   let goal = els.goalInput.value.trim();
   if (!goal && loadedPlaybook) {
     goal = loadedPlaybook.goal
@@ -1189,9 +1311,17 @@ async function startRun() {
   const useQwenNow = resolvedProvider.useQwenNow;
   const settings = {
     ...baseSettings,
-    provider: resolvedProvider.provider
+    provider: resolvedProvider.provider,
+    deviceDetection: detectedHardware
   };
-  const tab = await getActiveTab();
+  const effectiveStartUrl = startUrl || loadedPlaybook?.startUrl || '';
+  const tab = await getActiveTab().catch(() => null);
+  if (!settings.allowMultiTab && !tab?.id) {
+    els.resultBanner.className = 'result-banner error';
+    els.resultBanner.textContent = '操作対象のアクティブなタブが見つかりませんでした。';
+    els.resultBanner.classList.remove('hidden');
+    return;
+  }
   clearTimelineUiOnly();
   clearRunProgressState(chrome.storage?.local).catch(() => {});
 
@@ -1210,7 +1340,8 @@ async function startRun() {
 
     const bgRes = await chrome.runtime.sendMessage({
       type: MSG_TYPES.START_BACKGROUND_RUN,
-      tabId: tab.id,
+      tabId: tab?.id ?? null,
+      startUrl: effectiveStartUrl,
       goal,
       settings,
       initialPdf,
@@ -1239,7 +1370,8 @@ async function startRun() {
     try {
       const wsRes = await chrome.runtime.sendMessage({
         type: MSG_TYPES.INIT_WORKSPACE,
-        tabId: tab.id,
+        tabId: tab?.id ?? null,
+        startUrl: effectiveStartUrl,
         multiTabEnabled: true,
         backgroundMode: false,
         groupTitle: settings.tabGroupTitle,
@@ -1257,7 +1389,12 @@ async function startRun() {
     els.workspaceBar.classList.add('hidden');
   }
 
-  qwenClient.configure({ endpoint: settings.qwenEndpoint, model: settings.qwenModel });
+  qwenClient.configure({
+    endpoint: settings.qwenEndpoint,
+    model: settings.qwenModel,
+    inferenceEngine: settings.inferenceEngine,
+    deviceDetection: detectedHardware
+  });
   activeController = new AgentController({
     nanoClient: useQwenNow ? qwenClient : nanoClient,
     observe: observeCurrentTab,
@@ -1334,7 +1471,7 @@ els.downloadModelBtn.addEventListener('click', async () => {
   }
 });
 
-els.runBtn.addEventListener('click', startRun);
+els.runBtn.addEventListener('click', () => startRun());
 els.stopBtn.addEventListener('click', () => {
   if (backgroundRunActive) {
     chrome.runtime.sendMessage({ type: MSG_TYPES.STOP_BACKGROUND_RUN });
@@ -1345,6 +1482,15 @@ els.stopBtn.addEventListener('click', () => {
 els.clearLogBtn.addEventListener('click', clearTimeline);
 
 els.executionModeSelect.addEventListener('change', saveSettings);
+els.inferenceEngineSelect.addEventListener('change', async () => {
+  updateInferenceEngineNote();
+  qwenClient.configure({
+    inferenceEngine: els.inferenceEngineSelect.value,
+    deviceDetection: detectedHardware
+  });
+  await saveSettings();
+});
+els.redetectDeviceBtn.addEventListener('click', refreshDetectedHardware);
 els.useVisionCheckbox.addEventListener('change', saveSettings);
 els.allowBackgroundCheckbox.addEventListener('change', saveSettings);
 els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
@@ -1836,7 +1982,7 @@ function applyPresetToPlaybook(preset, switchTab = true) {
 async function runPresetNow(preset) {
   if (!preset) return;
   applyPresetToPlaybook(preset, true);
-  if (preset.startUrl) {
+  if (!els.allowMultiTabCheckbox.checked && preset.startUrl) {
     const active = await getActiveTab().catch(() => null);
     if (active?.id && (!active.url || active.url !== preset.startUrl)) {
       await chrome.runtime.sendMessage({
@@ -1846,7 +1992,7 @@ async function runPresetNow(preset) {
       });
     }
   }
-  await startRun();
+  await startRun({ startUrl: preset.startUrl || '' });
 }
 
 function renderMiniNodes(nodes, container) {
@@ -2031,4 +2177,4 @@ await loadSettings();
 await syncViewerInterceptConfig();
 await loadFlowPresets();
 await restorePanelAndRunState();
-await refreshAvailability();
+await Promise.all([refreshAvailability(), refreshDetectedHardware()]);

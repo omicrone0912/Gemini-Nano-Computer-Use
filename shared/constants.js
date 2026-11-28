@@ -19,6 +19,7 @@ export const ACTION_TYPES = Object.freeze([
 
 export const EXECUTION_MODES = Object.freeze({
   AUTO_SAFE: 'auto_safe',
+  AUTO_ALL: 'auto_all',
   STEP_BY_STEP: 'step_by_step'
 });
 

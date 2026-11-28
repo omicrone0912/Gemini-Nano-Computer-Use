@@ -6,6 +6,7 @@ import {
   buildReplayPlan,
   clearRunProgressState,
   compactEventsForStorage,
+  isLegacyMaxStepsRunState,
   loadPanelSessionState,
   loadRunProgressState,
   savePanelSessionState,
@@ -152,4 +153,41 @@ test('saveRunProgressState and clearRunProgressState isolate run history from pa
   await clearRunProgressState(storage);
   assert.equal(await loadRunProgressState(storage), null);
   assert.equal((await loadPanelSessionState(storage)).goal, '保持すべき目標');
+});
+
+test('loadRunProgressState and buildReplayPlan discard legacy max_steps outcomes', async () => {
+  const legacyOutcomeState = {
+    running: false,
+    mode: 'background',
+    goal: '古い作業',
+    events: [{ type: 'run_finished', status: 'max_steps', message: '最大ステップ数に達したため終了しました。' }],
+    lastOutcome: { status: 'max_steps', message: '最大ステップ数に達したため終了しました。' }
+  };
+
+  assert.equal(isLegacyMaxStepsRunState(legacyOutcomeState), true);
+  assert.equal(
+    isLegacyMaxStepsRunState({
+      running: false,
+      lastOutcome: { status: 'completed', message: '完了しました' }
+    }),
+    false
+  );
+  assert.equal(
+    isLegacyMaxStepsRunState({
+      running: true,
+      lastOutcome: { status: 'max_steps', message: '最大ステップ数に達したため終了しました。' }
+    }),
+    false
+  );
+
+  const storage = createMemoryStorage();
+  await saveRunProgressState(storage, legacyOutcomeState);
+  assert.ok(storage._map.has(RUN_STATE_STORAGE_KEY));
+
+  const loaded = await loadRunProgressState(storage);
+  assert.equal(loaded, null);
+  assert.equal(storage._map.has(RUN_STATE_STORAGE_KEY), false);
+
+  const plan = buildReplayPlan(legacyOutcomeState);
+  assert.equal(plan.shouldRestore, false);
 });

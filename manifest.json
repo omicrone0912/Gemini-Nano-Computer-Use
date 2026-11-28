@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gemini Nano Computer Use",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Chrome内蔵のGemini Nano (Prompt API) を用いて、現在のブラウザ画面を認識・自動操作するComputer Use拡張機能",
   "permissions": [
     "sidePanel",

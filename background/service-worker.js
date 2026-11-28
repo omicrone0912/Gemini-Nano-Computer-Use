@@ -14,6 +14,7 @@ import {
 import { SYSTEM_PROMPT } from '../shared/prompt-builder.js';
 import {
   clearRunProgressState,
+  isLegacyMaxStepsRunState,
   loadRunProgressState,
   saveRunProgressState
 } from '../shared/session-state.js';
@@ -75,15 +76,42 @@ async function setupSidePanelBehavior() {
   }
 }
 
+async function cleanupLegacyMaxStepsStorage() {
+  try {
+    const stored = await chrome.storage?.local?.get('nano_cu_settings_v1');
+    const savedSettings = stored?.nano_cu_settings_v1;
+    if (savedSettings && typeof savedSettings === 'object' && 'maxSteps' in savedSettings) {
+      const { maxSteps: _ignored, ...cleaned } = savedSettings;
+      await chrome.storage.local.set({ nano_cu_settings_v1: cleaned });
+    }
+  } catch {
+    // Ignore storage migration failures
+  }
+
+  try {
+    await loadRunProgressState(chrome.storage?.local);
+  } catch {
+    // Ignore run progress cleanup failures
+  }
+
+  if (!bgState.running && isLegacyMaxStepsRunState(bgState)) {
+    bgState.events = [];
+    bgState.lastOutcome = null;
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   setupSidePanelBehavior();
+  cleanupLegacyMaxStepsStorage();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   setupSidePanelBehavior();
+  cleanupLegacyMaxStepsStorage();
 });
 
 setupSidePanelBehavior();
+cleanupLegacyMaxStepsStorage();
 
 function waitForTabComplete(tabId, timeoutMs = 12000) {
   return new Promise((resolve) => {
@@ -587,7 +615,7 @@ async function hydrateBgStateIfNeeded() {
     return null;
   }
   const saved = await loadRunProgressState(chrome.storage?.local);
-  if (!saved || saved.mode === 'foreground') {
+  if (!saved || saved.mode === 'foreground' || isLegacyMaxStepsRunState(saved)) {
     return null;
   }
   bgState.goal = saved.goal || '';

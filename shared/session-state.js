@@ -110,12 +110,42 @@ export async function saveRunProgressState(storageArea, runState = {}) {
   }
 }
 
+export function isLegacyMaxStepsRunState(runState) {
+  if (!runState || typeof runState !== 'object' || runState.running) {
+    return false;
+  }
+  if (
+    runState.lastOutcome?.status === 'max_steps' ||
+    String(runState.lastOutcome?.message || '').includes('最大ステップ数に達した')
+  ) {
+    return true;
+  }
+  if (
+    Array.isArray(runState.events) &&
+    runState.events.some(
+      (ev) =>
+        ev?.type === 'run_finished' &&
+        (ev.status === 'max_steps' || String(ev.message || '').includes('最大ステップ数に達した'))
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export async function loadRunProgressState(storageArea) {
   if (!storageArea?.get) return null;
   try {
     const res = await storageArea.get(RUN_STATE_STORAGE_KEY);
     const saved = res?.[RUN_STATE_STORAGE_KEY];
-    return saved && typeof saved === 'object' ? saved : null;
+    if (!saved || typeof saved !== 'object') {
+      return null;
+    }
+    if (isLegacyMaxStepsRunState(saved)) {
+      await clearRunProgressState(storageArea);
+      return null;
+    }
+    return saved;
   } catch {
     return null;
   }
@@ -139,7 +169,7 @@ export async function clearRunProgressState(storageArea) {
 }
 
 export function buildReplayPlan(runState) {
-  if (!runState || typeof runState !== 'object') {
+  if (!runState || typeof runState !== 'object' || isLegacyMaxStepsRunState(runState)) {
     return {
       shouldRestore: false,
       running: false,

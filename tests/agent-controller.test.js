@@ -349,3 +349,78 @@ test('AgentController runs without a maxSteps cap until done even beyond 15 step
   assert.equal('maxSteps' in stepStartedEvents[0], false);
   assert.equal(stepStartedEvents.at(-1).step, 25);
 });
+
+test('AgentController AUTO_ALL mode auto-approves sensitive actions, ask_user, and strict playbook failures without prompting', async () => {
+  let confirmCalls = 0;
+  let stepCount = 0;
+  const executed = [];
+
+  const controller = new AgentController({
+    nanoClient: {
+      async initialize() {
+        return { multimodal: false };
+      },
+      async decideAction() {
+        stepCount += 1;
+        if (stepCount === 1) {
+          return { action: { thought: '質問', action: 'ask_user', message: '続行してよいですか？' }, usage: {} };
+        }
+        if (stepCount === 2) {
+          return { action: { thought: '購入確定', action: 'click', elementId: 1 }, usage: {} };
+        }
+        if (stepCount === 3) {
+          return { action: { thought: 'エラーテスト', action: 'click', elementId: 2 }, usage: {} };
+        }
+        if (stepCount === 4) {
+          return {
+            action: { thought: '危険スキーム', action: 'navigate', url: 'javascript:alert(1)' },
+            usage: {}
+          };
+        }
+        return { action: { thought: '完了', action: 'done', message: '全自動で完了しました' }, usage: {} };
+      }
+    },
+    async observe() {
+      return {
+        snapshot: {
+          restricted: false,
+          url: 'https://shop.example.com',
+          title: 'Checkout',
+          elements: [
+            { id: 1, tag: 'button', label: '購入を確定する' },
+            { id: 2, tag: 'button', label: '次へ' }
+          ]
+        },
+        playbookContext: {
+          title: '厳格手順',
+          filename: 'strict.md',
+          strictMode: true,
+          rawText: '## 実行ステップ\n1. [click] 購入を確定する'
+        }
+      };
+    },
+    async executeAction(action) {
+      executed.push(action);
+      if (action.elementId === 2) {
+        return { ok: false, error: '一時エラー' };
+      }
+      return { ok: true, detail: 'ok' };
+    },
+    async requestConfirmation() {
+      confirmCalls += 1;
+      return { approved: false, stop: true };
+    }
+  });
+
+  const outcome = await controller.run({
+    goal: '全自動で購入フローを完了する',
+    settings: { executionMode: EXECUTION_MODES.AUTO_ALL, actionDelayMs: 0 }
+  });
+
+  assert.equal(confirmCalls, 0);
+  assert.equal(outcome.status, 'completed');
+  assert.equal(executed.length, 2);
+  assert.equal(executed[0].elementId, 1);
+  assert.equal(outcome.history[0].result.autoApproved, true);
+  assert.equal(outcome.history[3].result.blocked, true);
+});

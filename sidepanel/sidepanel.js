@@ -2,6 +2,7 @@ import { AgentController } from '../shared/agent-controller.js';
 import {
   CHROME_AI_FLAGS,
   DEFAULT_SETTINGS,
+  EXECUTION_MODES,
   FLOW_PRESETS_STORAGE_KEY,
   MSG_TYPES,
   QWEN_USAGE_MODES
@@ -84,6 +85,7 @@ const els = {
   flagsList: document.getElementById('flagsList'),
   goalInput: document.getElementById('goalInput'),
   executionModeSelect: document.getElementById('executionModeSelect'),
+  autoAllModeWarning: document.getElementById('autoAllModeWarning'),
   useVisionCheckbox: document.getElementById('useVisionCheckbox'),
   allowBackgroundCheckbox: document.getElementById('allowBackgroundCheckbox'),
   allowMultiTabCheckbox: document.getElementById('allowMultiTabCheckbox'),
@@ -233,11 +235,22 @@ function updateAdvancedSettingsBadge() {
   els.advancedSettingsBadge.textContent = onCount === flags.length ? 'すべてON' : `${onCount}/${flags.length} ON`;
 }
 
+function updateExecutionModeWarning() {
+  if (!els.autoAllModeWarning) return;
+  els.autoAllModeWarning.classList.toggle(
+    'hidden',
+    els.executionModeSelect?.value !== EXECUTION_MODES.AUTO_ALL
+  );
+}
+
 async function loadSettings() {
   try {
     const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
     const saved = { ...DEFAULT_SETTINGS, ...(stored?.[SETTINGS_STORAGE_KEY] || {}) };
-    els.executionModeSelect.value = saved.executionMode;
+    const validModes = Object.values(EXECUTION_MODES);
+    els.executionModeSelect.value = validModes.includes(saved.executionMode)
+      ? saved.executionMode
+      : DEFAULT_SETTINGS.executionMode;
     els.useVisionCheckbox.checked = saved.useVision !== false;
     els.allowBackgroundCheckbox.checked = saved.allowBackgroundExecution !== false;
     els.allowMultiTabCheckbox.checked = saved.allowMultiTab !== false;
@@ -254,6 +267,7 @@ async function loadSettings() {
   } catch {
     // Ignore storage error
   }
+  updateExecutionModeWarning();
   updateAdvancedSettingsBadge();
 }
 
@@ -270,6 +284,7 @@ async function syncViewerInterceptConfig(extra = {}) {
 }
 
 async function saveSettings() {
+  updateExecutionModeWarning();
   updateAdvancedSettingsBadge();
   const settings = collectSettings();
   try {
@@ -1178,6 +1193,7 @@ async function startRun() {
   };
   const tab = await getActiveTab();
   clearTimelineUiOnly();
+  clearRunProgressState(chrome.storage?.local).catch(() => {});
 
   if (settings.allowBackgroundExecution) {
     setRunningUi(true);

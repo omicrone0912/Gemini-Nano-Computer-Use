@@ -222,8 +222,12 @@
             <label for="executionModeSelect">実行モード</label>
             <select id="executionModeSelect">
               <option value="auto_safe">自動（危険操作のみ確認）</option>
+              <option value="auto_all">全自動（すべての承認を自動許可）</option>
               <option value="step_by_step">ステップ実行（毎回確認）</option>
             </select>
+            <p id="autoAllModeWarning" class="settings-warning-note hidden">
+              ※ 送信・削除・購入確定や確認質問も停止せず自動承認して続行します。必要に応じて「緊急停止」をご利用ください。
+            </p>
           </div>
           <div class="toggle-row">
             <label class="checkbox-label">

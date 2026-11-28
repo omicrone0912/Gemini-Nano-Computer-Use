@@ -132,6 +132,7 @@ export class AgentController {
     }
 
     const merged = { ...DEFAULT_SETTINGS, ...settings };
+    const isAutoAll = merged.executionMode === EXECUTION_MODES.AUTO_ALL;
     this.abortController = new AbortController();
     const { signal } = this.abortController;
     this.running = true;
@@ -265,6 +266,24 @@ export class AgentController {
 
         // Interactive user question: ask_user
         if (action.action === 'ask_user') {
+          if (isAutoAll) {
+            const autoResult = {
+              ok: true,
+              autoApproved: true,
+              userReply: '全自動モードにより自動承認',
+              detail: '全自動モードにより確認を自動承認しました。'
+            };
+            history.push({ step, action, result: autoResult });
+            this.emit('step_completed', {
+              step,
+              action,
+              result: autoResult,
+              durationMs: Date.now() - stepStart
+            });
+            loopWarning =
+              '全自動モードのため確認は自動承認されました。ユーザーへ再質問せず、次の具体的な操作を進めてください。';
+            continue;
+          }
           const response = await this._confirm(
             {
               step,
@@ -308,7 +327,7 @@ export class AgentController {
             result: blockResult,
             durationMs: Date.now() - stepStart
           });
-          if (hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
+          if (!isAutoAll && hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
             const esc = await this._confirm(
               {
                 step,
@@ -339,7 +358,7 @@ export class AgentController {
 
         const loopThreshold = hasStrictPlaybook ? 2 : 3;
         if (detectActionLoop(history, action, loopThreshold)) {
-          if (hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
+          if (!isAutoAll && hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
             const esc = await this._confirm(
               {
                 step,
@@ -366,7 +385,8 @@ export class AgentController {
         }
 
         const needsConfirmation =
-          risk.level === 'confirm' || merged.executionMode === EXECUTION_MODES.STEP_BY_STEP;
+          !isAutoAll &&
+          (risk.level === 'confirm' || merged.executionMode === EXECUTION_MODES.STEP_BY_STEP);
 
         if (needsConfirmation) {
           const decisionConfirm = await this._confirm(
@@ -424,7 +444,7 @@ export class AgentController {
         });
 
         if (!execResult?.ok && execResult?.error) {
-          if (hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
+          if (!isAutoAll && hasStrictPlaybook && typeof this.requestConfirmation === 'function') {
             const esc = await this._confirm(
               {
                 step,

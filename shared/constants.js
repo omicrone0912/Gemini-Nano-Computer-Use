@@ -22,6 +22,11 @@ export const EXECUTION_MODES = Object.freeze({
   STEP_BY_STEP: 'step_by_step'
 });
 
+export const QWEN_USAGE_MODES = Object.freeze({
+  FALLBACK: 'fallback',
+  ALWAYS: 'always'
+});
+
 export const DEFAULT_SETTINGS = Object.freeze({
   maxSteps: 15,
   executionMode: EXECUTION_MODES.AUTO_SAFE,
@@ -30,6 +35,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   allowMultiTab: true,
   useBuiltInViewer: true,
   useQwenFallback: false,
+  qwenUsageMode: QWEN_USAGE_MODES.FALLBACK,
   qwenModel: 'qwen2.5vl:3b',
   qwenEndpoint: 'http://127.0.0.1:11434',
   tabGroupTitle: 'Nano AI',

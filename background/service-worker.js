@@ -1,5 +1,5 @@
 import { AgentController } from '../shared/agent-controller.js';
-import { DEFAULT_SETTINGS, MSG_TYPES } from '../shared/constants.js';
+import { DEFAULT_SETTINGS, MSG_TYPES, QWEN_USAGE_MODES } from '../shared/constants.js';
 import {
   classifyViewerMedia,
   detectMagicMimeType,
@@ -963,11 +963,18 @@ async function startBackgroundRun({ tabId, goal, settings = {}, initialPdf = nul
   const initialTab = await chrome.tabs.get(tabId);
 
   const nanoAdapter = createOffscreenNanoAdapter();
+  const resolvedProvider =
+    merged.provider ||
+    (merged.useQwenFallback && merged.qwenUsageMode === QWEN_USAGE_MODES.ALWAYS
+      ? 'qwen_local'
+      : merged.useQwenFallback
+        ? 'auto'
+        : 'nano');
   try {
     await nanoAdapter.initialize({
       useVision: merged.useVision,
       systemPrompt: SYSTEM_PROMPT,
-      provider: merged.provider || 'auto',
+      provider: resolvedProvider,
       useQwenFallback: Boolean(merged.useQwenFallback),
       qwenModel: merged.qwenModel,
       qwenEndpoint: merged.qwenEndpoint

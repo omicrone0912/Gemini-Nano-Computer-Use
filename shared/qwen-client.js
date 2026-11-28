@@ -1,4 +1,5 @@
 import { ACTION_RESPONSE_SCHEMA, parseActionResponse } from './action-schema.js';
+import { QWEN_USAGE_MODES } from './constants.js';
 import { buildZipBytes } from './office-parser.js';
 import { uint8ArrayToBase64 } from './pdf-parser.js';
 import { SYSTEM_PROMPT } from './prompt-builder.js';
@@ -12,6 +13,38 @@ export const QWEN_MODEL_OPTIONS = Object.freeze([
   { value: 'qwen2.5vl:3b', label: 'Qwen 2.5 VL 3B（軽量・推奨 約3.2GB）' },
   { value: 'qwen2.5vl:7b', label: 'Qwen 2.5 VL 7B（高精度 約6.0GB）' }
 ]);
+
+export function resolveAiProvider({
+  useQwenFallback = false,
+  qwenUsageMode = QWEN_USAGE_MODES.FALLBACK,
+  nanoStatus = 'unavailable'
+} = {}) {
+  if (!useQwenFallback) {
+    return {
+      provider: 'nano',
+      useQwenNow: false,
+      useQwenFallback: false,
+      mode: 'disabled'
+    };
+  }
+  const mode =
+    qwenUsageMode === QWEN_USAGE_MODES.ALWAYS ? QWEN_USAGE_MODES.ALWAYS : QWEN_USAGE_MODES.FALLBACK;
+  if (mode === QWEN_USAGE_MODES.ALWAYS) {
+    return {
+      provider: 'qwen_local',
+      useQwenNow: true,
+      useQwenFallback: true,
+      mode
+    };
+  }
+  const useQwenNow = nanoStatus !== 'available';
+  return {
+    provider: useQwenNow ? 'qwen_local' : 'auto',
+    useQwenNow,
+    useQwenFallback: true,
+    mode
+  };
+}
 
 export function validateLocalOllamaEndpoint(rawUrl = QWEN_DEFAULT_ENDPOINT) {
   const input = String(rawUrl || '').trim() || QWEN_DEFAULT_ENDPOINT;

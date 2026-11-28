@@ -39,6 +39,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             });
             activeClient = qwenClient;
           } else {
+            if (activeClient !== nanoClient) {
+              await activeClient.destroy().catch(() => {});
+            }
             try {
               result = await nanoClient.initialize({
                 useVision: Boolean(message.useVision),

@@ -3,7 +3,8 @@ import {
   CHROME_AI_FLAGS,
   DEFAULT_SETTINGS,
   FLOW_PRESETS_STORAGE_KEY,
-  MSG_TYPES
+  MSG_TYPES,
+  QWEN_USAGE_MODES
 } from '../shared/constants.js';
 import { NanoClient } from '../shared/nano-client.js';
 import {
@@ -13,6 +14,7 @@ import {
   buildQwenInstallerBatPayload,
   buildQwenInstallerZipPayload,
   generateQwenPowerShellOneLiner,
+  resolveAiProvider,
   startMonitoredChromeDownload
 } from '../shared/qwen-client.js';
 import { isSupportedViewerUrl } from '../shared/media-viewer.js';
@@ -60,6 +62,7 @@ const els = {
   downloadProgressLabel: document.getElementById('downloadProgressLabel'),
   useQwenFallbackCheckbox: document.getElementById('useQwenFallbackCheckbox'),
   qwenPanel: document.getElementById('qwenPanel'),
+  qwenModeSelect: document.getElementById('qwenModeSelect'),
   qwenModelSelect: document.getElementById('qwenModelSelect'),
   qwenStatusDot: document.getElementById('qwenStatusDot'),
   qwenStatusText: document.getElementById('qwenStatusText'),
@@ -236,6 +239,8 @@ async function loadSettings() {
     els.allowMultiTabCheckbox.checked = saved.allowMultiTab !== false;
     els.useBuiltInViewerCheckbox.checked = saved.useBuiltInViewer !== false;
     els.useQwenFallbackCheckbox.checked = Boolean(saved.useQwenFallback);
+    els.qwenModeSelect.value =
+      saved.qwenUsageMode === QWEN_USAGE_MODES.ALWAYS ? QWEN_USAGE_MODES.ALWAYS : QWEN_USAGE_MODES.FALLBACK;
     els.qwenModelSelect.value = saved.qwenModel || QWEN_DEFAULT_MODEL;
     qwenClient.configure({
       endpoint: saved.qwenEndpoint || QWEN_DEFAULT_ENDPOINT,
@@ -282,6 +287,8 @@ function collectSettings() {
     allowMultiTab: Boolean(els.allowMultiTabCheckbox.checked),
     useBuiltInViewer: Boolean(els.useBuiltInViewerCheckbox.checked),
     useQwenFallback: Boolean(els.useQwenFallbackCheckbox.checked),
+    qwenUsageMode:
+      els.qwenModeSelect.value === QWEN_USAGE_MODES.ALWAYS ? QWEN_USAGE_MODES.ALWAYS : QWEN_USAGE_MODES.FALLBACK,
     qwenModel: els.qwenModelSelect.value || QWEN_DEFAULT_MODEL,
     qwenEndpoint: QWEN_DEFAULT_ENDPOINT
   };
@@ -487,9 +494,20 @@ async function refreshAvailability() {
 
   availabilityState = nanoRes;
   const { status, multimodal, message } = availabilityState;
-  const qwenReady = Boolean(els.useQwenFallbackCheckbox.checked && qwenRes?.status === 'available');
+  const qwenEnabled = Boolean(els.useQwenFallbackCheckbox.checked);
+  const qwenAlways = qwenEnabled && els.qwenModeSelect.value === QWEN_USAGE_MODES.ALWAYS;
+  const qwenReady = Boolean(qwenEnabled && qwenRes?.status === 'available');
 
-  if (status === 'available') {
+  if (qwenAlways && qwenReady) {
+    els.statusDot.classList.add('ok');
+    els.statusText.textContent = `Qwen 2.5 VL (${qwenClient.model} / ローカル) を優先使用します`;
+    els.setupGuide.classList.add('hidden');
+  } else if (qwenAlways) {
+    els.statusDot.className = 'status-dot';
+    els.statusText.textContent =
+      'Qwen 2.5 VL（常に優先）が選択されています。下のパネルから導入・起動してください。';
+    els.setupGuide.classList.add('hidden');
+  } else if (status === 'available') {
     els.statusDot.classList.add('ok');
     els.statusText.textContent = message;
     els.setupGuide.classList.add('hidden');
@@ -503,7 +521,7 @@ async function refreshAvailability() {
   } else if (status === 'downloadable' || status === 'downloading') {
     els.statusText.textContent = message;
     els.downloadModelBtn.classList.remove('hidden');
-  } else if (els.useQwenFallbackCheckbox.checked) {
+  } else if (qwenEnabled) {
     els.statusDot.className = 'status-dot';
     els.statusText.textContent =
       'Gemini Nano が利用できません。下の Qwen 2.5 VL「1ステップ導入」からセットアップしてください。';
@@ -1100,6 +1118,7 @@ function setRunningUi(isRunning) {
   els.allowMultiTabCheckbox.disabled = isRunning;
   els.useBuiltInViewerCheckbox.disabled = isRunning;
   els.useQwenFallbackCheckbox.disabled = isRunning;
+  els.qwenModeSelect.disabled = isRunning;
   els.qwenModelSelect.disabled = isRunning;
 }
 
@@ -1121,10 +1140,15 @@ async function startRun() {
   await saveSettings();
   await persistPanelState();
   const baseSettings = collectSettings();
-  const useQwenNow = availabilityState?.status !== 'available' && baseSettings.useQwenFallback;
+  const resolvedProvider = resolveAiProvider({
+    useQwenFallback: baseSettings.useQwenFallback,
+    qwenUsageMode: baseSettings.qwenUsageMode,
+    nanoStatus: availabilityState?.status
+  });
+  const useQwenNow = resolvedProvider.useQwenNow;
   const settings = {
     ...baseSettings,
-    provider: useQwenNow ? 'qwen_local' : (baseSettings.useQwenFallback ? 'auto' : 'nano')
+    provider: resolvedProvider.provider
   };
   const tab = await getActiveTab();
   clearTimelineUiOnly();
@@ -1271,6 +1295,11 @@ els.allowMultiTabCheckbox.addEventListener('change', saveSettings);
 els.useBuiltInViewerCheckbox.addEventListener('change', saveSettings);
 
 els.useQwenFallbackCheckbox.addEventListener('change', async () => {
+  await saveSettings();
+  await refreshAvailability();
+});
+
+els.qwenModeSelect.addEventListener('change', async () => {
   await saveSettings();
   await refreshAvailability();
 });

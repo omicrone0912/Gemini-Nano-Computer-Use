@@ -42,11 +42,18 @@
               <input type="checkbox" id="useQwenFallbackCheckbox" />
               <span class="toggle-slider"></span>
             </span>
-            <span class="qwen-toggle-text">Gemini Nano が使えないとき Qwen 2.5 VL を使用</span>
+            <span class="qwen-toggle-text">Qwen 2.5 VL (ローカル) を使用する</span>
           </label>
         </div>
 
         <div id="qwenPanel" class="qwen-panel hidden">
+          <div class="qwen-model-row">
+            <label for="qwenModeSelect" class="qwen-model-label">使用条件:</label>
+            <select id="qwenModeSelect" aria-label="Qwen 2.5 VL 使用条件">
+              <option value="fallback">Gemini Nano が使えないときだけ（代替）</option>
+              <option value="always">常に Qwen 2.5 VL を優先して使用</option>
+            </select>
+          </div>
           <div class="qwen-model-row">
             <label for="qwenModelSelect" class="qwen-model-label">モデル:</label>
             <select id="qwenModelSelect" aria-label="Qwen 2.5 VL モデル選択">

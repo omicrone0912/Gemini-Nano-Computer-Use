@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { QWEN_USAGE_MODES } from '../shared/constants.js';
 import { readZipEntries } from '../shared/office-parser.js';
 import { base64ToUint8Array } from '../shared/pdf-parser.js';
 import {
@@ -13,6 +14,7 @@ import {
   generateQwenPowerShellOneLiner,
   generateQwenWindowsInstallerBat,
   isPendingDownloadDanger,
+  resolveAiProvider,
   startMonitoredChromeDownload,
   validateLocalOllamaEndpoint
 } from '../shared/qwen-client.js';
@@ -311,4 +313,31 @@ test('startMonitoredChromeDownload distinguishes USER_CANCELED and FILE_BLOCKED 
   mock2.emit({ id: 11, state: { current: 'interrupted' }, error: { current: 'FILE_BLOCKED' } });
   assert.equal(mock2.listeners.size, 0);
   assert.deepEqual(interrupted2, [{ downloadId: 11, error: 'FILE_BLOCKED', canceled: false }]);
+});
+
+test('resolveAiProvider respects disabled, fallback, and always-prioritize Qwen modes', () => {
+  assert.deepEqual(
+    resolveAiProvider({ useQwenFallback: false, qwenUsageMode: QWEN_USAGE_MODES.FALLBACK, nanoStatus: 'available' }),
+    { provider: 'nano', useQwenNow: false, useQwenFallback: false, mode: 'disabled' }
+  );
+  assert.deepEqual(
+    resolveAiProvider({ useQwenFallback: false, qwenUsageMode: QWEN_USAGE_MODES.ALWAYS, nanoStatus: 'unavailable' }),
+    { provider: 'nano', useQwenNow: false, useQwenFallback: false, mode: 'disabled' }
+  );
+  assert.deepEqual(
+    resolveAiProvider({ useQwenFallback: true, qwenUsageMode: QWEN_USAGE_MODES.FALLBACK, nanoStatus: 'available' }),
+    { provider: 'auto', useQwenNow: false, useQwenFallback: true, mode: QWEN_USAGE_MODES.FALLBACK }
+  );
+  assert.deepEqual(
+    resolveAiProvider({ useQwenFallback: true, qwenUsageMode: QWEN_USAGE_MODES.FALLBACK, nanoStatus: 'unavailable' }),
+    { provider: 'qwen_local', useQwenNow: true, useQwenFallback: true, mode: QWEN_USAGE_MODES.FALLBACK }
+  );
+  assert.deepEqual(
+    resolveAiProvider({ useQwenFallback: true, qwenUsageMode: QWEN_USAGE_MODES.ALWAYS, nanoStatus: 'available' }),
+    { provider: 'qwen_local', useQwenNow: true, useQwenFallback: true, mode: QWEN_USAGE_MODES.ALWAYS }
+  );
+  assert.deepEqual(
+    resolveAiProvider({ useQwenFallback: true, qwenUsageMode: QWEN_USAGE_MODES.ALWAYS, nanoStatus: 'unavailable' }),
+    { provider: 'qwen_local', useQwenNow: true, useQwenFallback: true, mode: QWEN_USAGE_MODES.ALWAYS }
+  );
 });

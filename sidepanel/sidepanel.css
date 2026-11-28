@@ -267,6 +267,7 @@ body {
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
+  min-width: 52px;
 }
 
 .qwen-model-row select {
